@@ -1,62 +1,72 @@
-import { Command } from 'commander';
-import { api, ApiError } from '../client.js';
-import { success, error, json, isJsonMode } from '../output.js';
+import { Command } from "commander";
+import { api, ApiError } from "../client.js";
+import { success, error, json, isJsonMode } from "../output.js";
 
 interface ActionResult {
   success: boolean;
   data?: Record<string, unknown>;
+  result?: Record<string, unknown>;
   error?: string;
+  message?: string;
 }
 
 async function executeAction(
   action: string,
   params: Record<string, unknown>,
 ): Promise<ActionResult> {
-  return api<ActionResult>('POST', '/internal/mcp/execute-action', {
+  return api<ActionResult>("POST", "/internal/mcp/execute-action", {
     action,
     params,
     context: {},
   });
 }
 
-const configureEndpointCommand = new Command('endpoint')
-  .description('Configure an API endpoint')
-  .requiredOption('--api <slug>', 'API slug')
-  .requiredOption('--method <method>', 'HTTP method (GET, POST, etc.)')
-  .requiredOption('--path <path>', 'Endpoint path (e.g. /users)')
-  .option('--status <code>', 'Response status code', parseInt)
-  .option('--body <json>', 'Response body (JSON string)')
-  .option('--delay <ms>', 'Response delay in milliseconds', parseInt)
+const configureEndpointCommand = new Command("endpoint")
+  .description("Configure an API endpoint")
+  .requiredOption("--api <slug>", "API slug")
+  .requiredOption("--method <method>", "HTTP method (GET, POST, etc.)")
+  .requiredOption("--path <path>", "Endpoint path (e.g. /users)")
+  .option("--status <code>", "Response status code", parseInt)
+  .option("--body <json>", "Response body (JSON string)")
+  .option("--delay <ms>", "Response delay in milliseconds", parseInt)
   .action(async (opts) => {
     try {
+      const config: Record<string, unknown> = {
+        defaultResponse: {
+          status: opts.status ?? 200,
+          body: {},
+          headers: { "Content-Type": "application/json" },
+        },
+      };
+
+      if (opts.body) {
+        try {
+          (config.defaultResponse as Record<string, unknown>).body = JSON.parse(
+            opts.body,
+          );
+        } catch {
+          (config.defaultResponse as Record<string, unknown>).body = opts.body;
+        }
+      }
+      if (opts.delay !== undefined) config.delay = opts.delay;
+
       const params: Record<string, unknown> = {
         apiId: opts.api,
         method: opts.method.toUpperCase(),
         path: opts.path,
+        config,
       };
-      if (opts.status !== undefined) params.statusCode = opts.status;
-      if (opts.body) {
-        try {
-          params.responseBody = JSON.parse(opts.body);
-        } catch {
-          params.responseBody = opts.body;
-        }
-      }
-      if (opts.delay !== undefined) params.delay = opts.delay;
 
-      const result = await executeAction(
-        'mockito_configure_endpoint',
-        params,
-      );
+      const result = await executeAction("mockito_configure_endpoint", params);
 
       if (!result.success) {
-        error(result.error || 'Failed to configure endpoint.');
+        error(result.error || "Failed to configure endpoint.");
         process.exitCode = 1;
         return;
       }
 
       if (isJsonMode()) {
-        json(result.data);
+        json(result.data || result.result);
         return;
       }
 
@@ -75,7 +85,7 @@ const configureEndpointCommand = new Command('endpoint')
     }
   });
 
-export const configureCommand = new Command('configure')
-  .alias('config')
-  .description('Configure API endpoints')
+export const configureCommand = new Command("configure")
+  .alias("config")
+  .description("Configure API endpoints")
   .addCommand(configureEndpointCommand);
