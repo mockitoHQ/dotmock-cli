@@ -12,6 +12,7 @@ import { browseCommand } from './commands/browse.js';
 import { cloneCommand } from './commands/clone.js';
 import { configureCommand } from './commands/configure.js';
 import { exampleCommand } from './commands/example.js';
+import { webhookCommand } from './commands/webhook.js';
 
 const program = new Command();
 
@@ -33,5 +34,6 @@ program.addCommand(browseCommand);
 program.addCommand(cloneCommand);
 program.addCommand(configureCommand);
 program.addCommand(exampleCommand);
+program.addCommand(webhookCommand);
 
 program.parse();

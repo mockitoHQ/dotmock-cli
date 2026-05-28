@@ -25,13 +25,14 @@ async function executeAction(
 
 const createApiCommand = new Command("api")
   .description("Create a new mock API")
-  .option("--type <type>", "API type (rest or llm)", "rest")
+  .option("--type <type>", "API type (rest, llm, or webhook)", "rest")
   .option("--from <file>", "Create from file (OpenAPI JSON or .ts/.tsx)")
   .option("--name <name>", "API name")
   .option("--prompt <text>", "Generate API from a text prompt using AI")
   .option("--subdomain <sub>", "Subdomain for the mock URL")
   .action(async (opts) => {
     try {
+      const apiType = normalizeApiType(opts.type);
       let result: ActionResult;
 
       if (opts.from) {
@@ -59,8 +60,9 @@ const createApiCommand = new Command("api")
           result = await executeAction("mockito_create_api", {
             name: opts.name || "Imported API",
             subdomain: opts.subdomain || slugify(opts.name || "imported-api"),
+            mockType: apiType,
             openApiSpec,
-            specificationType: "openapi",
+            specificationType: apiType === "llm" ? "llm" : "openapi",
           });
         }
       } else if (opts.prompt) {
@@ -70,11 +72,17 @@ const createApiCommand = new Command("api")
         });
       } else {
         const name =
-          opts.name || (opts.type === "llm" ? "New LLM Mock" : "New API");
+          opts.name ||
+          (opts.type === "llm"
+            ? "New LLM Mock"
+            : opts.type === "webhook"
+              ? "New Webhook Mock"
+              : "New API");
         result = await executeAction("mockito_create_api", {
           name,
           subdomain: opts.subdomain || slugify(name),
-          specificationType: opts.type === "llm" ? "llm" : "openapi",
+          specificationType: apiType === "llm" ? "llm" : "openapi",
+          mockType: apiType,
           openApiSpec: {
             openapi: "3.0.0",
             info: { title: name, version: "1.0.0" },
@@ -177,4 +185,11 @@ function slugify(value: string): string {
       .replace(/^-|-$/g, "")
       .slice(0, 50) || "api"
   );
+}
+
+function normalizeApiType(value: string): "rest" | "llm" | "webhook" {
+  if (value === "rest" || value === "llm" || value === "webhook") {
+    return value;
+  }
+  throw new Error("API type must be rest, llm, or webhook.");
 }

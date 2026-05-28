@@ -30,7 +30,7 @@ async function executeAction(
 
 const listApisCommand = new Command("apis")
   .description("List your mock APIs")
-  .option("--type <type>", "Filter by type (rest or llm)")
+  .option("--type <type>", "Filter by type (rest, llm, or webhook)")
   .action(async (opts) => {
     try {
       const params: Record<string, unknown> = {};
@@ -65,7 +65,7 @@ const listApisCommand = new Command("apis")
         ["Name", "Type", "Endpoints", "URL"],
         apis.map((a) => [
           String(a.name || ""),
-          String(a.specificationType || a.type || "rest"),
+          String(a.mockType || a.apiKind || a.specificationType || a.type || "rest"),
           String(a.endpointCount ?? a.endpoints ?? "—"),
           String(a.url || a.mockUrl || ""),
         ]),

@@ -5,6 +5,8 @@ import { join } from 'node:path';
 export interface DotmockConfig {
   apiKey?: string;
   baseUrl?: string;
+  appUrl?: string;
+  teamId?: string;
 }
 
 const CONFIG_DIR = join(homedir(), '.dotmock');
@@ -24,6 +26,14 @@ export function getBaseUrl(): string {
 
   const config = readConfig();
   return config?.baseUrl ?? 'https://api.dotmock.com';
+}
+
+export function getAppUrl(): string {
+  const envUrl = process.env.DOTMOCK_APP_URL;
+  if (envUrl) return envUrl;
+
+  const config = readConfig();
+  return config?.appUrl ?? 'https://dotmock.com';
 }
 
 export function readConfig(): DotmockConfig | null {
