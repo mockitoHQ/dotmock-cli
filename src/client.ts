@@ -18,6 +18,7 @@ export async function api<T = unknown>(
   method: string,
   path: string,
   body?: unknown,
+  options?: { signal?: AbortSignal },
 ): Promise<T> {
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -34,16 +35,20 @@ export async function api<T = unknown>(
     'x-api-key': apiKey,
   };
 
-  const options: RequestInit = {
+  const requestInit: RequestInit = {
     method: method.toUpperCase(),
     headers,
   };
 
   if (body !== undefined) {
-    options.body = JSON.stringify(body);
+    requestInit.body = JSON.stringify(body);
   }
 
-  const response = await fetch(url, options);
+  if (options?.signal) {
+    requestInit.signal = options.signal;
+  }
+
+  const response = await fetch(url, requestInit);
 
   if (!response.ok) {
     let errorBody: unknown;

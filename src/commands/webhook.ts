@@ -1,5 +1,6 @@
 import { Command, Option } from 'commander';
 import { readFileSync } from 'node:fs';
+import chalk from 'chalk';
 import { api, ApiError } from '../client.js';
 import { error, info, isJsonMode, json, success, table } from '../output.js';
 import {
@@ -9,6 +10,14 @@ import {
   removeWebhookSubscriber,
   WebhookSubscriber,
 } from '../webhooks-config.js';
+import {
+  deliverWebhookPayload,
+  isLocalUrl,
+  WebhookDelivery,
+  WebhookDeliveryTarget,
+  WebhookListener,
+} from '../webhook-transport.js';
+import { webhookListenCommand } from './webhook-listen.js';
 
 interface WebhookEvent {
   eventKey: string;
@@ -66,7 +75,7 @@ eventCommand
       payload.enabled = opts.disabled ? false : payload.enabled ?? true;
 
       const event = await executeAction<WebhookEvent>(
-        'mockito_create_webhook_event',
+        'dotmock_create_webhook_event',
         {
           apiId: opts.api,
           event: payload,
@@ -84,7 +93,7 @@ eventCommand
   .action(async (opts) => {
     await run(async () => {
       const events = await executeAction<WebhookEvent[]>(
-        'mockito_list_webhook_events',
+        'dotmock_list_webhook_events',
         { apiId: opts.api },
       );
       if (isJsonMode()) {
@@ -115,7 +124,7 @@ eventCommand
   .action(async (opts) => {
     await run(async () => {
       const event = await executeAction<WebhookEvent>(
-        'mockito_get_webhook_event',
+        'dotmock_get_webhook_event',
         {
           apiId: opts.api,
           eventKey: opts.event,
@@ -149,7 +158,7 @@ eventCommand
       if (opts.disable) payload.enabled = false;
 
       const event = await executeAction<WebhookEvent>(
-        'mockito_update_webhook_event',
+        'dotmock_update_webhook_event',
         {
           apiId: opts.api,
           eventKey: opts.event,
@@ -168,7 +177,7 @@ eventCommand
   .requiredOption('--event <key>', 'Event key')
   .action(async (opts) => {
     await run(async () => {
-      await executeAction('mockito_delete_webhook_event', {
+      await executeAction('dotmock_delete_webhook_event', {
         apiId: opts.api,
         eventKey: opts.event,
       });
@@ -281,14 +290,17 @@ urlCommand
   });
 
 const triggerCommand = new Command('trigger')
-  .description('Render an event from the cloud and POST it to local URLs')
+  .description('Trigger a webhook event and deliver it to a listener or local URL')
   .requiredOption('--api <apiId>', 'API id')
   .requiredOption('--event <key>', 'Event key')
-  .option('--url <name>', 'Only deliver to one local subscriber name or id')
-  .option('--all', 'Deliver to every local subscriber for this API')
+  .option('--to <url>', 'Deliver directly to this remote URL')
+  .option('--listener <listenerId>', 'Deliver to a specific `webhook listen` session')
+  .option('--url <name>', 'Only deliver to one local subscriber name or id (legacy)')
+  .option('--all', 'Deliver to every local subscriber for this API (legacy)')
   .option('--data <json>', 'Inline JSON data to merge into the rendered body')
   .option('--from <file>', 'Read JSON data from a file')
-  .option('--dry-run', 'Render and print without POSTing')
+  .option('--secret <secret>', 'Signing secret override for this delivery')
+  .option('--dry-run', 'Render and print without POSTing (legacy)')
   .action(async (opts) => {
     await run(async () => {
       const data = opts.from
@@ -303,8 +315,57 @@ const triggerCommand = new Command('trigger')
         return;
       }
 
+      if (opts.dryRun) {
+        const rendered = await executeAction<RenderedWebhookEvent>(
+          'dotmock_render_webhook_event',
+          {
+            apiId: opts.api,
+            eventKey: opts.event,
+            data,
+          },
+        );
+        const subscribers = findWebhookSubscribers({
+          apiId: opts.api,
+          eventKey: opts.event,
+          name: opts.url,
+          all: opts.all,
+        });
+        json({ rendered, targets: subscribers });
+        return;
+      }
+
+      const target = await resolveTriggerTarget(opts);
+
+      if (target) {
+        const delivery = await api<WebhookDelivery>(
+          'POST',
+          `/mock-apis/${opts.api}/webhook-events/${opts.event}/trigger`,
+          {
+            data,
+            target,
+            source: 'cli',
+            ...(opts.secret ? { secret: opts.secret } : {}),
+          },
+        );
+
+        if (isJsonMode()) {
+          json(delivery);
+          return;
+        }
+        success(
+          `Triggered "${opts.event}" → delivery ${delivery.id.slice(0, 8)} (${delivery.status}).`,
+        );
+        if (delivery.target.type === 'remote' && delivery.target.url) {
+          info(`Target: ${delivery.target.url}`);
+        } else if (delivery.target.listenerId) {
+          info(`Target: listener ${delivery.target.listenerId.slice(0, 8)}`);
+        }
+        return;
+      }
+
+      // Legacy fallback: render from the cloud and POST directly to local URLs.
       const rendered = await executeAction<RenderedWebhookEvent>(
-        'mockito_render_webhook_event',
+        'dotmock_render_webhook_event',
         {
           apiId: opts.api,
           eventKey: opts.event,
@@ -317,11 +378,6 @@ const triggerCommand = new Command('trigger')
         name: opts.url,
         all: opts.all,
       });
-
-      if (opts.dryRun) {
-        json({ rendered, targets: subscribers });
-        return;
-      }
 
       if (subscribers.length === 0) {
         error('No matching local webhook URLs. Add one with `dotmock webhook url add`.');
@@ -352,40 +408,245 @@ const triggerCommand = new Command('trigger')
     }, 'trigger webhook');
   });
 
+/**
+ * Resolves where a non-dry-run trigger should be delivered:
+ * - `--to` wins outright (explicit remote URL).
+ * - `--listener` wins outright (explicit listener id).
+ * - Otherwise, look up live listeners for this API: exactly one → route to
+ *   it; zero or multiple → return null so the caller falls back to the
+ *   legacy render-and-POST flow.
+ */
+async function resolveTriggerTarget(opts: {
+  api: string;
+  to?: string;
+  listener?: string;
+}): Promise<WebhookDeliveryTarget | null> {
+  if (opts.to) {
+    return { type: 'remote', url: opts.to };
+  }
+  if (opts.listener) {
+    return { type: 'local', listenerId: opts.listener };
+  }
+
+  const listeners = await api<WebhookListener[]>(
+    'GET',
+    `/mock-apis/${opts.api}/webhook-listeners`,
+  );
+
+  if (listeners.length === 1) {
+    const listener = listeners[0];
+    info(`→ routing to listener ${listener.label || listener.listenerId.slice(0, 8)}`);
+    return { type: 'local', listenerId: listener.listenerId };
+  }
+
+  if (listeners.length > 1 && !isJsonMode()) {
+    console.log(chalk.dim('multiple listeners connected; pass --listener <id>'));
+  }
+
+  return null;
+}
+
+const inspectCommand = new Command('inspect')
+  .description('Inspect webhook deliveries for an API')
+  .requiredOption('--api <apiId>', 'API id')
+  .option('--id <deliveryId>', 'Show a single delivery in full detail')
+  .option('--follow', 'Poll for new deliveries and print them as they arrive')
+  .option('--limit <n>', 'Number of deliveries to list', '20')
+  .action(async (opts) => {
+    await run(async () => {
+      if (opts.id) {
+        const delivery = await api<WebhookDelivery>(
+          'GET',
+          `/mock-apis/${opts.api}/webhook-deliveries/${opts.id}`,
+        );
+        json(delivery);
+        return;
+      }
+
+      const limit = Number(opts.limit) > 0 ? Number(opts.limit) : 20;
+
+      if (opts.follow) {
+        await followDeliveries(opts.api, limit);
+        return;
+      }
+
+      const deliveries = await api<WebhookDelivery[]>(
+        'GET',
+        `/mock-apis/${opts.api}/webhook-deliveries?limit=${limit}`,
+      );
+
+      if (isJsonMode()) {
+        json(deliveries);
+        return;
+      }
+
+      if (deliveries.length === 0) {
+        success('No webhook deliveries found.');
+        return;
+      }
+
+      table(
+        ['Time', 'Event', 'Status', 'Source', 'Target', 'Code', 'Latency', 'ID'],
+        deliveries.map((delivery) => [
+          formatTime(new Date(delivery.createdAt)),
+          delivery.eventKey,
+          colorStatus(delivery.status),
+          delivery.source,
+          formatTarget(delivery.target),
+          delivery.result?.statusCode !== undefined
+            ? String(delivery.result.statusCode)
+            : '—',
+          delivery.result?.latencyMs !== undefined
+            ? `${delivery.result.latencyMs}ms`
+            : '—',
+          delivery.id.slice(0, 8),
+        ]),
+      );
+    }, 'inspect webhook deliveries');
+  });
+
+const retryCommand = new Command('retry')
+  .description('Retry a webhook delivery')
+  .argument('<deliveryId>', 'Delivery id to retry')
+  .requiredOption('--api <apiId>', 'API id')
+  .action(async (deliveryId, opts) => {
+    await run(async () => {
+      const delivery = await api<WebhookDelivery>(
+        'POST',
+        `/mock-apis/${opts.api}/webhook-deliveries/${deliveryId}/retry`,
+      );
+      if (isJsonMode()) {
+        json(delivery);
+        return;
+      }
+      success(
+        `Retried delivery ${String(deliveryId).slice(0, 8)} → new delivery ${delivery.id.slice(0, 8)} (${delivery.status}).`,
+      );
+    }, 'retry webhook delivery');
+  });
+
+async function followDeliveries(apiId: string, limit: number): Promise<void> {
+  const seen = new Set<string>();
+  let primed = false;
+  let running = true;
+
+  const stop = () => {
+    running = false;
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+
+  try {
+    while (running) {
+      const deliveries = await api<WebhookDelivery[]>(
+        'GET',
+        `/mock-apis/${apiId}/webhook-deliveries?limit=${limit}`,
+      );
+
+      // Oldest-first so the feed reads top-to-bottom in arrival order.
+      const unseen = [...deliveries].reverse().filter((d) => !seen.has(d.id));
+      for (const delivery of unseen) {
+        seen.add(delivery.id);
+        if (!primed) continue; // Don't replay history on first poll.
+        printDeliveryFeedLine(delivery);
+      }
+      primed = true;
+
+      if (!running) break;
+      await sleep(2000);
+    }
+  } finally {
+    process.off('SIGINT', stop);
+    process.off('SIGTERM', stop);
+  }
+}
+
+function printDeliveryFeedLine(delivery: WebhookDelivery): void {
+  if (isJsonMode()) {
+    json(delivery);
+    return;
+  }
+  const time = chalk.dim(formatTime(new Date(delivery.createdAt)));
+  const target = formatTarget(delivery.target);
+  const code =
+    delivery.result?.statusCode !== undefined
+      ? String(delivery.result.statusCode)
+      : '—';
+  const latency =
+    delivery.result?.latencyMs !== undefined ? `${delivery.result.latencyMs}ms` : '';
+  const icon =
+    delivery.status === 'delivered'
+      ? chalk.green('✓')
+      : delivery.status === 'failed'
+        ? chalk.red('✗')
+        : chalk.yellow('•');
+  console.log(
+    `${icon} ${time} ${delivery.eventKey} → ${target} ${colorStatus(delivery.status)} ${code} ${latency}`.trim(),
+  );
+}
+
+function colorStatus(status: WebhookDelivery['status']): string {
+  switch (status) {
+    case 'delivered':
+      return chalk.green(status);
+    case 'failed':
+      return chalk.red(status);
+    case 'queued':
+      return chalk.yellow(status);
+    case 'delivering':
+      return chalk.cyan(status);
+    default:
+      return status;
+  }
+}
+
+function formatTarget(target: WebhookDeliveryTarget): string {
+  if (target.type === 'local') {
+    return `local:${(target.listenerId || '').slice(0, 8)}`;
+  }
+  if (target.url) {
+    try {
+      return new URL(target.url).host;
+    } catch {
+      return target.url;
+    }
+  }
+  return target.type;
+}
+
+function formatTime(date: Date): string {
+  return date.toTimeString().slice(0, 8);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export const webhookCommand = new Command('webhook')
   .description('Manage webhook mocks and trigger local callback delivery')
   .addCommand(eventCommand)
   .addCommand(urlCommand)
-  .addCommand(triggerCommand);
+  .addCommand(triggerCommand)
+  .addCommand(webhookListenCommand)
+  .addCommand(inspectCommand)
+  .addCommand(retryCommand);
 
 async function postToSubscriber(
   subscriber: WebhookSubscriber,
   rendered: RenderedWebhookEvent,
 ) {
-  try {
-    const response = await fetch(subscriber.url, {
-      method: 'POST',
-      headers: rendered.headers,
-      body:
-        typeof rendered.body === 'string'
-          ? rendered.body
-          : JSON.stringify(rendered.body),
-    });
-    return {
-      name: subscriber.name,
-      url: subscriber.url,
-      status: response.status,
-      ok: response.ok,
-    };
-  } catch (err) {
-    return {
-      name: subscriber.name,
-      url: subscriber.url,
-      status: 0,
-      ok: false,
-      error: (err as Error).message,
-    };
-  }
+  const attempt = await deliverWebhookPayload(
+    subscriber.url,
+    rendered.headers,
+    rendered.body,
+  );
+  return {
+    name: subscriber.name,
+    url: subscriber.url,
+    status: attempt.status,
+    ok: attempt.ok,
+    error: attempt.error,
+  };
 }
 
 async function executeAction<T = unknown>(
@@ -502,14 +763,3 @@ function hasEventDefinitionKeys(value: Record<string, unknown>): boolean {
   );
 }
 
-function isLocalUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (
-      (url.protocol === 'http:' || url.protocol === 'https:') &&
-      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
-    );
-  } catch {
-    return false;
-  }
-}
