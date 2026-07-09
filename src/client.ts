@@ -65,5 +65,11 @@ export async function api<T = unknown>(
     return undefined as T;
   }
 
-  return (await response.json()) as T;
+  // Some endpoints respond with an empty body on success.
+  const text = await response.text();
+  if (!text) {
+    return undefined as T;
+  }
+
+  return JSON.parse(text) as T;
 }

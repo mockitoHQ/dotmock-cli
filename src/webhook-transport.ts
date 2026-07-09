@@ -12,12 +12,23 @@ export interface WebhookDeliveryAttempt {
   status: number;
   ok: boolean;
   latencyMs: number;
+  /** ISO timestamp captured when the attempt completed. */
+  at: string;
   error?: string;
+}
+
+/** Attempt record shape required by the backend's delivery-result DTO. */
+export interface WebhookDeliveryAttemptResult {
+  attempt: number;
+  statusCode?: number;
+  ok: boolean;
+  error?: string;
+  at: string;
 }
 
 export interface WebhookDeliveryResultPayload {
   statusCode?: number;
-  attempts: WebhookDeliveryAttempt[];
+  attempts: WebhookDeliveryAttemptResult[];
   latencyMs?: number;
   error?: string;
 }
@@ -90,6 +101,7 @@ export async function deliverWebhookPayload(
       status: response.status,
       ok: response.ok,
       latencyMs: Date.now() - start,
+      at: new Date().toISOString(),
     };
   } catch (err) {
     return {
@@ -97,6 +109,7 @@ export async function deliverWebhookPayload(
       status: 0,
       ok: false,
       latencyMs: Date.now() - start,
+      at: new Date().toISOString(),
       error: (err as Error).message,
     };
   }

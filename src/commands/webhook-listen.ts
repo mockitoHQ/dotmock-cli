@@ -226,7 +226,14 @@ async function handleDelivery(
   const reportBody = {
     status: allOk ? 'delivered' : 'failed',
     statusCode: attempts[0]?.status,
-    attempts,
+    // Map to the backend's WebhookDeliveryAttemptResultDto shape.
+    attempts: attempts.map((attempt, index) => ({
+      attempt: index + 1,
+      statusCode: attempt.status,
+      ok: attempt.ok,
+      ...(attempt.error ? { error: attempt.error } : {}),
+      at: attempt.at,
+    })),
     latencyMs: attempts.length
       ? Math.max(...attempts.map((attempt) => attempt.latencyMs))
       : 0,
