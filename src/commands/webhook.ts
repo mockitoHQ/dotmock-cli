@@ -563,7 +563,8 @@ async function followDeliveries(apiId: string, limit: number): Promise<void> {
 
 function printDeliveryFeedLine(delivery: WebhookDelivery): void {
   if (isJsonMode()) {
-    json(delivery);
+    // Streaming output must be NDJSON: one JSON object per line.
+    console.log(JSON.stringify(delivery));
     return;
   }
   const time = chalk.dim(formatTime(new Date(delivery.createdAt)));
