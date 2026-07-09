@@ -84,6 +84,8 @@ export function isLocalUrl(value: string): boolean {
  * including wall-clock latency. Never throws — network failures are
  * captured in the returned result.
  */
+const FORWARD_TIMEOUT_MS = 10_000;
+
 export async function deliverWebhookPayload(
   url: string,
   headers: Record<string, string>,
@@ -95,6 +97,7 @@ export async function deliverWebhookPayload(
       method: 'POST',
       headers,
       body: typeof body === 'string' ? body : JSON.stringify(body),
+      signal: AbortSignal.timeout(FORWARD_TIMEOUT_MS),
     });
     return {
       url,
@@ -104,13 +107,17 @@ export async function deliverWebhookPayload(
       at: new Date().toISOString(),
     };
   } catch (err) {
+    const error =
+      (err as Error).name === 'TimeoutError'
+        ? `timeout after ${FORWARD_TIMEOUT_MS}ms`
+        : (err as Error).message;
     return {
       url,
       status: 0,
       ok: false,
       latencyMs: Date.now() - start,
       at: new Date().toISOString(),
-      error: (err as Error).message,
+      error,
     };
   }
 }
