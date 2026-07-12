@@ -13,12 +13,14 @@ import { cloneCommand } from './commands/clone.js';
 import { configureCommand } from './commands/configure.js';
 import { exampleCommand } from './commands/example.js';
 import { webhookCommand } from './commands/webhook.js';
+import { configCommand } from './commands/config.js';
+import { skillCommand } from './commands/skill.js';
 
 const program = new Command();
 
 program
   .name('dotmock')
-  .description('CLI for dotMock — create, manage, and use mock APIs')
+  .description('CLI for DotMock — create, manage, and use mock APIs')
   .version('0.1.0');
 
 program.addCommand(loginCommand);
@@ -35,5 +37,7 @@ program.addCommand(cloneCommand);
 program.addCommand(configureCommand);
 program.addCommand(exampleCommand);
 program.addCommand(webhookCommand);
+program.addCommand(configCommand);
+program.addCommand(skillCommand);
 
 program.parse();

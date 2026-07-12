@@ -218,7 +218,7 @@ export const exampleCommand = new Command('example')
     try {
       const lang: Language = opts.lang || detectLanguage();
 
-      const result = await executeAction('mockito_get_api', { apiId: slug });
+      const result = await executeAction('dotmock_get_api', { apiId: slug });
 
       if (!result.success) {
         error(result.error || 'API not found.');

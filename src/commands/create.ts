@@ -3,6 +3,11 @@ import { readFileSync } from "node:fs";
 import { extname } from "node:path";
 import { api, ApiError } from "../client.js";
 import { success, error, info, json, isJsonMode } from "../output.js";
+import { parse as parseYaml } from "yaml";
+import {
+  parseMockKind,
+  specificationTypeForKind,
+} from "../mock-kind.js";
 
 interface ActionResult {
   success: boolean;
@@ -25,14 +30,14 @@ async function executeAction(
 
 const createApiCommand = new Command("api")
   .description("Create a new mock API")
-  .option("--type <type>", "API type (rest, llm, or webhook)", "rest")
-  .option("--from <file>", "Create from file (OpenAPI JSON or .ts/.tsx)")
+  .option("--type <type>", "API type (rest, graphql, soap, grpc, llm, or webhook)", "rest")
+  .option("--from <file>", "Create from file (OpenAPI JSON/YAML or .ts/.tsx)")
   .option("--name <name>", "API name")
   .option("--prompt <text>", "Generate API from a text prompt using AI")
   .option("--subdomain <sub>", "Subdomain for the mock URL")
   .action(async (opts) => {
     try {
-      const apiType = normalizeApiType(opts.type);
+      const apiType = parseMockKind(opts.type);
       let result: ActionResult;
 
       if (opts.from) {
@@ -41,7 +46,7 @@ const createApiCommand = new Command("api")
 
         if (ext === ".ts" || ext === ".tsx") {
           info("Analyzing TypeScript file...");
-          result = await executeAction("mockito_analyze_typescript", {
+          result = await executeAction("dotmock_analyze_typescript", {
             code,
             fileName: opts.from,
           });
@@ -49,25 +54,25 @@ const createApiCommand = new Command("api")
           info("Parsing OpenAPI spec...");
           let openApiSpec: unknown;
           try {
-            openApiSpec = JSON.parse(code);
+            openApiSpec = ext === ".yaml" || ext === ".yml" ? parseYaml(code) : JSON.parse(code);
           } catch {
             error(
-              "Failed to parse file as JSON. Ensure it is a valid OpenAPI spec.",
+              "Failed to parse file as JSON or YAML. Ensure it is a valid OpenAPI spec.",
             );
             process.exitCode = 1;
             return;
           }
-          result = await executeAction("mockito_create_api", {
+          result = await executeAction("dotmock_create_api", {
             name: opts.name || "Imported API",
             subdomain: opts.subdomain || slugify(opts.name || "imported-api"),
             mockType: apiType,
             openApiSpec,
-            specificationType: apiType === "llm" ? "llm" : "openapi",
+            specificationType: specificationTypeForKind(apiType),
           });
         }
       } else if (opts.prompt) {
         info("Generating API from prompt...");
-        result = await executeAction("mockito_generate_api", {
+        result = await executeAction("dotmock_generate_api", {
           description: opts.prompt,
         });
       } else {
@@ -78,10 +83,10 @@ const createApiCommand = new Command("api")
             : opts.type === "webhook"
               ? "New Webhook Mock"
               : "New API");
-        result = await executeAction("mockito_create_api", {
+        result = await executeAction("dotmock_create_api", {
           name,
           subdomain: opts.subdomain || slugify(name),
-          specificationType: apiType === "llm" ? "llm" : "openapi",
+          specificationType: specificationTypeForKind(apiType),
           mockType: apiType,
           openApiSpec: {
             openapi: "3.0.0",
@@ -185,11 +190,4 @@ function slugify(value: string): string {
       .replace(/^-|-$/g, "")
       .slice(0, 50) || "api"
   );
-}
-
-function normalizeApiType(value: string): "rest" | "llm" | "webhook" {
-  if (value === "rest" || value === "llm" || value === "webhook") {
-    return value;
-  }
-  throw new Error("API type must be rest, llm, or webhook.");
 }

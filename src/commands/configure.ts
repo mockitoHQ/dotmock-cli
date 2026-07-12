@@ -57,7 +57,7 @@ const configureEndpointCommand = new Command("endpoint")
         config,
       };
 
-      const result = await executeAction("mockito_configure_endpoint", params);
+      const result = await executeAction("dotmock_configure_endpoint", params);
 
       if (!result.success) {
         error(result.error || "Failed to configure endpoint.");
@@ -86,6 +86,5 @@ const configureEndpointCommand = new Command("endpoint")
   });
 
 export const configureCommand = new Command("configure")
-  .alias("config")
   .description("Configure API endpoints")
   .addCommand(configureEndpointCommand);

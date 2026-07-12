@@ -32,7 +32,7 @@ const updateApiCommand = new Command("api")
       if (opts.name) updates.name = opts.name;
       if (opts.description) updates.description = opts.description;
 
-      const result = await executeAction("mockito_update_api", {
+      const result = await executeAction("dotmock_update_api", {
         apiId: slug,
         updates,
       });

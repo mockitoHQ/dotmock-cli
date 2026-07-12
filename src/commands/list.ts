@@ -36,7 +36,7 @@ const listApisCommand = new Command("apis")
       const params: Record<string, unknown> = {};
       if (opts.type) params.type = opts.type;
 
-      const result = await executeAction("mockito_list_apis", params);
+      const result = await executeAction("dotmock_list_apis", params);
 
       if (!result.success) {
         error(result.error || "Failed to list APIs.");
@@ -124,7 +124,7 @@ const listEndpointsCommand = new Command("endpoints")
   .requiredOption("--api <slug>", "API slug")
   .action(async (opts) => {
     try {
-      const result = await executeAction("mockito_list_endpoints", {
+      const result = await executeAction("dotmock_list_endpoints", {
         apiId: opts.api,
       });
 

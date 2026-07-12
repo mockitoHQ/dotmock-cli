@@ -50,7 +50,7 @@ const deleteApiCommand = new Command('api')
         }
       }
 
-      const result = await executeAction('mockito_delete_api', {
+      const result = await executeAction('dotmock_delete_api', {
         apiId: slug,
       });
 

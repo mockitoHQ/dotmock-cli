@@ -78,7 +78,7 @@ async function createCliAuthSession(): Promise<CliAuthSessionResponse> {
   const response = await fetch(`${getBaseUrl()}/auth/cli/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ clientName: 'dotMock CLI' }),
+    body: JSON.stringify({ clientName: 'DotMock CLI' }),
   });
 
   if (!response.ok) {
@@ -196,7 +196,7 @@ async function loginWithApiKey(apiKey: string): Promise<void> {
 }
 
 export const loginCommand = new Command('login')
-  .description('Authenticate with dotMock in your browser')
+  .description('Authenticate with DotMock in your browser')
   .option('--api-key <key>', 'Authenticate directly with an API key for CI or headless environments')
   .option('--print-url', 'Print the browser login URL without opening it')
   .action(async (opts: { apiKey?: string; printUrl?: boolean }) => {
@@ -227,7 +227,7 @@ export const loginCommand = new Command('login')
 
       try {
         await openBrowser(loginUrl);
-        success('Opened dotMock login in your browser.');
+        success('Opened DotMock login in your browser.');
       } catch {
         info('Open this URL to continue login:');
         console.log(loginUrl);

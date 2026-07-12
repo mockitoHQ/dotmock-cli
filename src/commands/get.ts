@@ -24,7 +24,7 @@ const getApiCommand = new Command('api')
   .argument('<slug>', 'API slug')
   .action(async (slug: string) => {
     try {
-      const result = await executeAction('mockito_get_api', { apiId: slug });
+      const result = await executeAction('dotmock_get_api', { apiId: slug });
 
       if (!result.success) {
         error(result.error || 'Failed to get API.');

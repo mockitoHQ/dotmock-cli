@@ -43,7 +43,7 @@ export const searchCommand = new Command('search')
         .catch(() => [] as Record<string, unknown>[]);
 
       // Fetch own APIs (requires auth), then filter client-side
-      const ownPromise = executeAction('mockito_list_apis', {})
+      const ownPromise = executeAction('dotmock_list_apis', {})
         .then((result) => {
           if (!result.success) return [];
           const apis = (result.data?.apis as Record<string, unknown>[]) || [];
