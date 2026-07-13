@@ -8,6 +8,7 @@ import {
   table,
   methodColor,
 } from "../output.js";
+import { executeAction as execute } from "../actions.js";
 
 interface ActionResult {
   success: boolean;
@@ -170,6 +171,48 @@ const listEndpointsCommand = new Command("endpoints")
     }
   });
 
+const listTrafficCommand = new Command("traffic")
+  .description("List recent traffic for an API")
+  .requiredOption("--api <id>", "API ID or slug")
+  .option("--limit <n>", "Maximum records (1-1000)", parsePositiveInteger, 100)
+  .option("--offset <n>", "Records to skip", parseNonNegativeInteger, 0)
+  .action(async (opts) => {
+    try {
+      const result = await execute<Record<string, unknown>>(
+        "dotmock_get_traffic_logs",
+        { apiId: opts.api, limit: opts.limit, offset: opts.offset },
+      );
+      const logs = Array.isArray(result.logs)
+        ? (result.logs as Record<string, unknown>[])
+        : [];
+      if (isJsonMode()) {
+        json(result);
+        return;
+      }
+      if (!logs.length) {
+        success("No traffic found.");
+        return;
+      }
+      table(
+        ["Time", "Method", "Path", "Status", "Duration"],
+        logs.map((entry) => [
+          String(entry.timestamp || entry.createdAt || ""),
+          methodColor(String(entry.method || "")),
+          String(entry.path || entry.url || ""),
+          String(entry.statusCode ?? entry.status ?? ""),
+          entry.durationMs === undefined ? "" : `${entry.durationMs}ms`,
+        ]),
+      );
+    } catch (err) {
+      if (err instanceof ApiError) {
+        error(`Failed to list traffic (HTTP ${err.status}): ${err.message}`);
+      } else {
+        error(`Failed to list traffic: ${(err as Error).message}`);
+      }
+      process.exitCode = 1;
+    }
+  });
+
 function truncate(str: string, max: number): string {
   if (str.length <= max) return str;
   return str.slice(0, max - 1) + "\u2026";
@@ -177,7 +220,24 @@ function truncate(str: string, max: number): string {
 
 export const listCommand = new Command("list")
   .alias("ls")
-  .description("List APIs, fixtures, or endpoints")
+  .description("List APIs, fixtures, endpoints, or traffic")
   .addCommand(listApisCommand)
   .addCommand(listFixturesCommand)
-  .addCommand(listEndpointsCommand);
+  .addCommand(listEndpointsCommand)
+  .addCommand(listTrafficCommand);
+
+function parsePositiveInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1000) {
+    throw new Error("Limit must be between 1 and 1000.");
+  }
+  return parsed;
+}
+
+function parseNonNegativeInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error("Offset must be a non-negative integer.");
+  }
+  return parsed;
+}

@@ -8,6 +8,8 @@ import {
   parseMockKind,
   specificationTypeForKind,
 } from "../mock-kind.js";
+import { createEndpointCommand } from "./create-endpoint.js";
+import { asRecord, readStructuredFile } from "../structured-input.js";
 
 interface ActionResult {
   success: boolean;
@@ -46,9 +48,27 @@ const createApiCommand = new Command("api")
 
         if (ext === ".ts" || ext === ".tsx") {
           info("Analyzing TypeScript file...");
-          result = await executeAction("dotmock_analyze_typescript", {
+          const analysis = await executeAction("dotmock_analyze_typescript", {
             code,
             fileName: opts.from,
+          });
+          const analyzed = actionData(analysis);
+          const openApiSpec = generatedOpenApiSpec(
+            analyzed,
+            "TypeScript analysis",
+          );
+          const generatedName =
+            opts.name ||
+            String(
+              (openApiSpec as Record<string, any>).info?.title ||
+                "Imported TypeScript API",
+            );
+          result = await executeAction("dotmock_create_api", {
+            name: generatedName,
+            subdomain: opts.subdomain || slugify(generatedName),
+            mockType: apiType,
+            openApiSpec,
+            specificationType: specificationTypeForKind(apiType),
           });
         } else {
           info("Parsing OpenAPI spec...");
@@ -72,8 +92,26 @@ const createApiCommand = new Command("api")
         }
       } else if (opts.prompt) {
         info("Generating API from prompt...");
-        result = await executeAction("dotmock_generate_api", {
+        const generated = await executeAction("dotmock_generate_api", {
           description: opts.prompt,
+        });
+        const generatedData = actionData(generated);
+        const openApiSpec = generatedOpenApiSpec(
+          generatedData,
+          "API generation",
+        );
+        const generatedName =
+          opts.name ||
+          String(
+            (openApiSpec as Record<string, any>).info?.title || "Generated API",
+          );
+        result = await executeAction("dotmock_create_api", {
+          name: generatedName,
+          subdomain: opts.subdomain || slugify(generatedName),
+          mockType: apiType,
+          openApiSpec,
+          specificationType: specificationTypeForKind(apiType),
+          isAiGenerated: true,
         });
       } else {
         const name =
@@ -125,7 +163,7 @@ const createApiCommand = new Command("api")
 const createFixtureCommand = new Command("fixture")
   .description("Create a new LLM fixture")
   .requiredOption("--api <slug>", "API slug")
-  .requiredOption("--name <name>", "Fixture name")
+  .option("--name <name>", "Fixture name (required unless --from provides one)")
   .option("--match <text>", "User message match text")
   .option("--model <model>", "Model match pattern")
   .option("--response <text>", "Response text")
@@ -136,15 +174,13 @@ const createFixtureCommand = new Command("fixture")
       let body: Record<string, unknown>;
 
       if (opts.from) {
-        const raw = readFileSync(opts.from, "utf-8");
-        try {
-          body = JSON.parse(raw) as Record<string, unknown>;
-        } catch {
-          error("Failed to parse fixture file as JSON.");
+        body = asRecord(readStructuredFile(opts.from), "Fixture definition");
+      } else {
+        if (!opts.name) {
+          error("Provide --name or a fixture file containing name.");
           process.exitCode = 1;
           return;
         }
-      } else {
         body = { name: opts.name, match: {}, response: {} };
         if (opts.match)
           (body.match as Record<string, unknown>).userMessage = opts.match;
@@ -153,6 +189,12 @@ const createFixtureCommand = new Command("fixture")
         if (opts.response)
           (body.response as Record<string, unknown>).content = opts.response;
         if (opts.priority !== undefined) body.priority = opts.priority;
+      }
+
+      if (!body.name) {
+        error("Fixture definition must include name.");
+        process.exitCode = 1;
+        return;
       }
 
       const result = await api(
@@ -166,7 +208,7 @@ const createFixtureCommand = new Command("fixture")
         return;
       }
 
-      success(`Fixture "${opts.name}" created.`);
+      success(`Fixture "${String(body.name)}" created.`);
     } catch (err) {
       if (err instanceof ApiError) {
         error(`Failed to create fixture (HTTP ${err.status}): ${err.message}`);
@@ -178,9 +220,25 @@ const createFixtureCommand = new Command("fixture")
   });
 
 export const createCommand = new Command("create")
-  .description("Create a new API or fixture")
+  .description("Create a new API, endpoint, or fixture")
   .addCommand(createApiCommand)
+  .addCommand(createEndpointCommand)
   .addCommand(createFixtureCommand);
+
+export function actionData(result: ActionResult): Record<string, unknown> {
+  return result.data || result.result || {};
+}
+
+export function generatedOpenApiSpec(
+  value: Record<string, unknown>,
+  source: string,
+): Record<string, unknown> {
+  const candidate = value.openApiSpec ?? (value.openapi ? value : undefined);
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    throw new Error(`${source} did not return an OpenAPI specification.`);
+  }
+  return candidate as Record<string, unknown>;
+}
 
 function slugify(value: string): string {
   return (

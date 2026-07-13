@@ -15,13 +15,17 @@ import { exampleCommand } from './commands/example.js';
 import { webhookCommand } from './commands/webhook.js';
 import { configCommand } from './commands/config.js';
 import { skillCommand } from './commands/skill.js';
+import { testCommand } from './commands/test.js';
+import { reorderCommand } from './commands/reorder.js';
+import { analyzeCommand } from './commands/analyze.js';
 
 const program = new Command();
 
 program
   .name('dotmock')
   .description('CLI for DotMock — create, manage, and use mock APIs')
-  .version('0.1.0');
+  .version('0.1.0')
+  .option('--json', 'Emit machine-readable JSON for coding agents and CI');
 
 program.addCommand(loginCommand);
 program.addCommand(logoutCommand);
@@ -39,5 +43,11 @@ program.addCommand(exampleCommand);
 program.addCommand(webhookCommand);
 program.addCommand(configCommand);
 program.addCommand(skillCommand);
+program.addCommand(testCommand);
+program.addCommand(reorderCommand);
+program.addCommand(analyzeCommand);
 
-program.parse();
+program.parseAsync().catch((cause) => {
+  console.error(cause instanceof Error ? cause.message : String(cause));
+  process.exitCode = 1;
+});

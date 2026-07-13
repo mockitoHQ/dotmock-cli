@@ -1,9 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { Command } from "commander";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { api, ApiError } from "../client.js";
-import { error, info, isJsonMode, json, success } from "../output.js";
+import { error, info, isJsonMode, json, success, table } from "../output.js";
+import { asRecord, readStructuredValue } from "../structured-input.js";
 
 interface ActionResult<T = unknown> { success: boolean; result?: T; data?: T; message?: string; error?: string }
 interface DefinitionEnvelope { definition: Record<string, unknown>; etag: string; published?: { revision: number } | null }
@@ -97,6 +99,141 @@ const apply = new Command("apply")
     } catch (cause) { handleError(cause); }
   });
 
+const patch = new Command("patch")
+  .description("Merge-patch the shared draft without publishing")
+  .requiredOption("--api <id>", "API ID")
+  .requiredOption("--patch <json|@file>", "JSON/YAML merge patch or @file")
+  .option("--etag <etag>", "Expected draft ETag (defaults to a fresh pull)")
+  .action(async ({ api: apiId, patch: input, etag }) => {
+    try {
+      const value = asRecord(readStructuredValue(input, "--patch"), "Draft patch");
+      const expected = etag || (await execute<DefinitionEnvelope>("dotmock_get_definition", { apiId })).etag;
+      const result = await execute<any>("dotmock_update_definition_draft", { apiId, etag: expected, patch: value });
+      if (isJsonMode()) json(result);
+      else {
+        success(`Draft patched (${result.etag})`);
+        info("Live traffic is unchanged until explicit publication.");
+      }
+    } catch (cause) { handleError(cause); }
+  });
+
+const simulate = new Command("simulate")
+  .description("Run a deterministic side-effect-free simulation against the draft")
+  .requiredOption("--api <id>", "API ID")
+  .requiredOption("--request <json|@file>", "Request object or @file")
+  .option("--seed <n>", "Deterministic random seed", parseInteger, 0)
+  .option("--at <iso-time>", "Virtual time")
+  .action(async ({ api: apiId, request, seed, at }) => {
+    try {
+      const value = asRecord(readStructuredValue(request, "--request"), "Simulation request");
+      if (at) value.virtualTime = at;
+      const result = await execute<any>("dotmock_simulate_definition", { apiId, request: value, seed });
+      if (isJsonMode()) json(result);
+      else {
+        result.winner
+          ? success(`Matched ${result.winner.name || result.winner.ruleId}`)
+          : info("No rule matched.");
+        console.log(JSON.stringify(result.response, null, 2));
+        info("Simulation did not persist state or execute external effects.");
+      }
+    } catch (cause) { handleError(cause); }
+  });
+
+const revisions = new Command("revisions")
+  .description("List immutable published revisions")
+  .requiredOption("--api <id>", "API ID")
+  .action(async ({ api: apiId }) => {
+    try {
+      const result = await execute<unknown>("dotmock_list_definition_revisions", { apiId });
+      const items = Array.isArray(result)
+        ? result
+        : Array.isArray((result as Record<string, unknown>)?.revisions)
+          ? ((result as Record<string, unknown>).revisions as unknown[])
+          : [];
+      if (isJsonMode()) { json(result); return; }
+      if (!items.length) { info("No published revisions."); return; }
+      table(
+        ["Revision", "Published", "Author", "ETag"],
+        items.map((item) => {
+          const revision = item as Record<string, unknown>;
+          return [
+            String(revision.revision ?? revision.version ?? ""),
+            String(revision.publishedAt ?? revision.createdAt ?? ""),
+            String(revision.publishedBy ?? revision.createdBy ?? ""),
+            String(revision.etag ?? ""),
+          ];
+        }),
+      );
+    } catch (cause) { handleError(cause); }
+  });
+
+const publish = new Command("publish")
+  .description("Publish the validated shared draft as a new live revision")
+  .requiredOption("--api <id>", "API ID")
+  .option("--etag <etag>", "Expected draft ETag (defaults to a fresh pull)")
+  .option("--force", "Confirm publication for non-interactive use")
+  .action(async ({ api: apiId, etag, force }) => {
+    try {
+      if (!(await destructiveConfirmation(`Publish the current draft for ${apiId}?`, force))) return;
+      const expected = etag || (await execute<DefinitionEnvelope>("dotmock_get_definition", { apiId })).etag;
+      const result = await execute<any>("dotmock_publish_definition", { apiId, etag: expected });
+      if (isJsonMode()) json(result);
+      else success(`Published revision ${result.revision ?? result.published?.revision ?? "created"}.`);
+    } catch (cause) { handleError(cause); }
+  });
+
+const rollback = new Command("rollback")
+  .description("Publish a new revision copied from an immutable historical revision")
+  .requiredOption("--api <id>", "API ID")
+  .requiredOption("--revision <n>", "Historical revision", parsePositiveInteger)
+  .option("--etag <etag>", "Expected draft ETag (defaults to a fresh pull)")
+  .option("--force", "Confirm rollback for non-interactive use")
+  .action(async ({ api: apiId, revision, etag, force }) => {
+    try {
+      if (!(await destructiveConfirmation(`Roll back ${apiId} from revision ${revision}?`, force))) return;
+      const expected = etag || (await execute<DefinitionEnvelope>("dotmock_get_definition", { apiId })).etag;
+      const result = await execute<any>("dotmock_rollback_definition", { apiId, revision, etag: expected });
+      if (isJsonMode()) json(result);
+      else success(`Rollback published as revision ${result.revision ?? result.published?.revision ?? "created"}.`);
+    } catch (cause) { handleError(cause); }
+  });
+
 export const configCommand = new Command("config")
   .description("Manage revisioned dotmock.yaml configuration")
-  .addCommand(pull).addCommand(validate).addCommand(diff).addCommand(plan).addCommand(apply);
+  .addCommand(pull)
+  .addCommand(validate)
+  .addCommand(diff)
+  .addCommand(plan)
+  .addCommand(apply)
+  .addCommand(patch)
+  .addCommand(simulate)
+  .addCommand(revisions)
+  .addCommand(publish)
+  .addCommand(rollback);
+
+async function destructiveConfirmation(message: string, force: boolean): Promise<boolean> {
+  if (force) return true;
+  if (isJsonMode()) {
+    throw new Error("Destructive operations require --force in JSON mode.");
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const answer = await new Promise<string>((resolveAnswer) => {
+    rl.question(`${message} (y/N) `, resolveAnswer);
+  });
+  rl.close();
+  if (answer.trim().toLowerCase() === "y") return true;
+  info("Aborted.");
+  return false;
+}
+
+function parseInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed)) throw new Error("Value must be an integer.");
+  return parsed;
+}
+
+function parsePositiveInteger(value: string): number {
+  const parsed = parseInteger(value);
+  if (parsed < 1) throw new Error("Revision must be a positive integer.");
+  return parsed;
+}

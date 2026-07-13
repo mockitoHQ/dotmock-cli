@@ -1,6 +1,14 @@
 import { Command } from "commander";
 import { api, ApiError } from "../client.js";
 import { success, error, json, isJsonMode } from "../output.js";
+import {
+  asRecord,
+  collect,
+  parseHeaders,
+  readBodyFile,
+  readStructuredFile,
+  readStructuredValue,
+} from "../structured-input.js";
 
 interface ActionResult {
   success: boolean;
@@ -28,27 +36,88 @@ const configureEndpointCommand = new Command("endpoint")
   .requiredOption("--path <path>", "Endpoint path (e.g. /users)")
   .option("--status <code>", "Response status code", parseInt)
   .option("--body <json>", "Response body (JSON string)")
+  .option("--body-file <file>", "Read response body from JSON, YAML, or text")
+  .option("--header <name:value>", "Response header (repeatable)", collect, [])
   .option("--delay <ms>", "Response delay in milliseconds", parseInt)
+  .option("--case <json|@file>", "Conditional response case (repeatable)", collect, [])
+  .option("--fault <json|@file>", "Fault injection rule (repeatable)", collect, [])
+  .option("--request-schema <file>", "Request JSON Schema file")
+  .option("--from <file>", "Merge endpoint configuration from JSON or YAML")
+  .option("--replace", "Replace configuration instead of merging with the current behavior")
+  .option("--clear-cases", "Remove every conditional response case")
+  .option("--clear-faults", "Remove every fault rule")
+  .option("--clear-delay", "Remove the response delay")
   .action(async (opts) => {
     try {
-      const config: Record<string, unknown> = {
-        defaultResponse: {
-          status: opts.status ?? 200,
-          body: {},
-          headers: { "Content-Type": "application/json" },
-        },
+      const currentResult = opts.replace
+        ? undefined
+        : await executeAction("dotmock_get_endpoint", {
+            apiId: opts.api,
+            method: opts.method.toUpperCase(),
+            path: opts.path,
+          });
+      const currentPayload = currentResult
+        ? currentResult.data || currentResult.result || {}
+        : {};
+      const currentConfig = asRecord(
+        (currentPayload as Record<string, unknown>).config ?? {},
+        "Current endpoint configuration",
+      );
+      const fileConfig = opts.from
+        ? asRecord(readStructuredFile(opts.from), "Endpoint configuration")
+        : {};
+      const base = { ...currentConfig, ...fileConfig };
+      const baseDefault = asRecord(
+        base.defaultResponse ?? base.default ?? {},
+        "Default response",
+      );
+      const config: Record<string, unknown> = {};
+      const responseHeaders = {
+        "Content-Type": "application/json",
+        ...asStringRecord(baseDefault.headers),
+        ...parseHeaders(opts.header),
       };
+      let responseBody: unknown = baseDefault.body ?? {};
+
+      if (opts.bodyFile) responseBody = readBodyFile(opts.bodyFile);
 
       if (opts.body) {
         try {
-          (config.defaultResponse as Record<string, unknown>).body = JSON.parse(
-            opts.body,
-          );
+          responseBody = JSON.parse(opts.body);
         } catch {
-          (config.defaultResponse as Record<string, unknown>).body = opts.body;
+          responseBody = opts.body;
         }
       }
-      if (opts.delay !== undefined) config.delay = opts.delay;
+      config.defaultResponse = {
+        status: opts.status ?? baseDefault.status ?? 200,
+        body: responseBody,
+        headers: responseHeaders,
+      };
+
+      const delay = opts.clearDelay ? undefined : opts.delay ?? base.delay;
+      if (delay !== undefined && Number(delay) > 0) config.delay = Number(delay);
+      const requestSchema = opts.requestSchema
+        ? readStructuredFile(opts.requestSchema)
+        : base.requestSchema;
+      if (requestSchema) config.requestSchema = requestSchema;
+
+      const cases = opts.clearCases
+        ? []
+        : opts.case.length
+          ? opts.case.map((value: string) => readStructuredValue(value, "--case"))
+          : Array.isArray(base.cases)
+            ? base.cases
+            : [];
+      if (cases.length) config.cases = cases;
+
+      const faults = opts.clearFaults
+        ? []
+        : opts.fault.length
+          ? opts.fault.map((value: string) => readStructuredValue(value, "--fault"))
+          : Array.isArray(base.faults)
+            ? base.faults
+            : [];
+      if (faults.length) config.faults = faults;
 
       const params: Record<string, unknown> = {
         apiId: opts.api,
@@ -88,3 +157,13 @@ const configureEndpointCommand = new Command("endpoint")
 export const configureCommand = new Command("configure")
   .description("Configure API endpoints")
   .addCommand(configureEndpointCommand);
+
+function asStringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      String(item),
+    ]),
+  );
+}

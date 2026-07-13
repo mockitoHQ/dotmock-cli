@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { api, ApiError } from '../client.js';
 import { error, info, json, isJsonMode, success } from '../output.js';
+import { executeAction as execute } from '../actions.js';
 
 interface ActionResult {
   success: boolean;
@@ -88,7 +89,67 @@ const getFixtureCommand = new Command('fixture')
     }
   });
 
+const getEndpointCommand = new Command('endpoint')
+  .description('Get the complete behavior for one endpoint')
+  .requiredOption('--api <id>', 'API ID or slug')
+  .requiredOption('--method <method>', 'HTTP method')
+  .requiredOption('--path <path>', 'Endpoint path')
+  .action(async (opts) => {
+    try {
+      const endpoint = await execute<Record<string, unknown>>(
+        'dotmock_get_endpoint',
+        {
+          apiId: opts.api,
+          method: String(opts.method).toUpperCase(),
+          path: opts.path,
+        },
+      );
+      if (isJsonMode()) {
+        json(endpoint);
+        return;
+      }
+      success(`${String(opts.method).toUpperCase()} ${opts.path}`);
+      console.log(JSON.stringify(endpoint, null, 2));
+    } catch (err) {
+      if (err instanceof ApiError) {
+        error(`Failed to get endpoint (HTTP ${err.status}): ${err.message}`);
+      } else {
+        error(`Failed to get endpoint: ${(err as Error).message}`);
+      }
+      process.exitCode = 1;
+    }
+  });
+
+const getStatsCommand = new Command('stats')
+  .description('Get usage and performance statistics for an API')
+  .requiredOption('--api <id>', 'API ID or slug')
+  .action(async (opts) => {
+    try {
+      const stats = await execute<Record<string, unknown>>(
+        'dotmock_get_api_stats',
+        { apiId: opts.api },
+      );
+      if (isJsonMode()) {
+        json(stats);
+        return;
+      }
+      success('API statistics');
+      for (const [key, value] of Object.entries(stats)) {
+        info(`${key}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`);
+      }
+    } catch (err) {
+      if (err instanceof ApiError) {
+        error(`Failed to get API statistics (HTTP ${err.status}): ${err.message}`);
+      } else {
+        error(`Failed to get API statistics: ${(err as Error).message}`);
+      }
+      process.exitCode = 1;
+    }
+  });
+
 export const getCommand = new Command('get')
-  .description('Get details of an API or fixture')
+  .description('Get API, endpoint, fixture, or statistics details')
   .addCommand(getApiCommand)
-  .addCommand(getFixtureCommand);
+  .addCommand(getFixtureCommand)
+  .addCommand(getEndpointCommand)
+  .addCommand(getStatsCommand);

@@ -8,12 +8,17 @@ const files = [
   "SKILL.md",
   "agents/openai.yaml",
   "references/api-discovery.md",
+  "references/project-integration.md",
+  "references/authentication-and-environments.md",
+  "references/resilience-scenarios.md",
+  "references/cli-workflows.md",
   "references/rules-and-matching.md",
   "references/state-and-actions.md",
   "references/protocols.md",
   "references/testing-and-debugging.md",
   "references/typescript-openapi.md",
   "references/tool-contracts.md",
+  "references/fixtures-webhooks-and-approvals.md",
   "references/generated-v2-schema.md",
 ] as const;
 
