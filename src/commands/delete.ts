@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { createInterface } from 'node:readline';
 import { api, ApiError } from '../client.js';
 import { success, error, json, isJsonMode } from '../output.js';
+import { executeAction as execute } from '../actions.js';
 
 interface ActionResult {
   success: boolean;
@@ -82,7 +83,10 @@ const deleteFixtureCommand = new Command('fixture')
   .requiredOption('--id <id>', 'Fixture ID')
   .action(async (opts) => {
     try {
-      await api('DELETE', `/mock-apis/${opts.api}/llm-fixtures/${opts.id}`);
+      await execute('dotmock_delete_llm_fixture', {
+        apiId: opts.api,
+        fixtureId: opts.id,
+      });
 
       if (isJsonMode()) {
         json({ deleted: true, api: opts.api, id: opts.id });

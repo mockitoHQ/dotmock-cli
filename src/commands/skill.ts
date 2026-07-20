@@ -37,7 +37,7 @@ function targets(agent: Agent | "auto", scope: Scope): Agent[] {
 async function install(agent: Agent, scope: Scope): Promise<string> {
   const base = scope === "global" ? homedir() : process.cwd();
   const destination = resolve(base, agentFolder[agent], "skills", "dotmock");
-  const source = (process.env.DOTMOCK_SKILL_URL || "https://dotmock.com/.claude/skills/dotmock").replace(/\/$/, "");
+  const source = (process.env.DOTMOCK_SKILL_URL || "https://dotmock.com/api/skills/dotmock").replace(/\/$/, "");
   const localSource = process.env.DOTMOCK_SKILL_PATH;
   const content = await Promise.all(files.map(async (file) => {
     if (localSource) return [file, readFileSync(join(localSource, file), "utf8")] as const;

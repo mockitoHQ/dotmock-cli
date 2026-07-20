@@ -1,8 +1,8 @@
-import { Command } from 'commander';
-import chalk from 'chalk';
-import { api, ApiError } from '../client.js';
-import { error, info, json, isJsonMode } from '../output.js';
-import { detectLanguage, type Language } from '../detect.js';
+import { Command } from "commander";
+import chalk from "chalk";
+import { api, ApiError } from "../client.js";
+import { error, info, json, isJsonMode } from "../output.js";
+import { detectLanguage, type Language } from "../detect.js";
 
 interface ActionResult {
   success: boolean;
@@ -14,7 +14,7 @@ async function executeAction(
   action: string,
   params: Record<string, unknown>,
 ): Promise<ActionResult> {
-  return api<ActionResult>('POST', '/internal/mcp/execute-action', {
+  return api<ActionResult>("POST", "/internal/mcp/execute-action", {
     action,
     params,
     context: {},
@@ -141,32 +141,39 @@ const LLM_GENERATORS: Record<Language, (url: string) => string> = {
 function restTypescript(url: string, method: string, path: string): string {
   const upper = method.toUpperCase();
   const opts =
-    upper === 'GET'
-      ? ''
+    upper === "GET"
+      ? ""
       : `,\n  method: "${upper}",\n  headers: { "Content-Type": "application/json" },\n  body: JSON.stringify({})`;
-  return `const res = await fetch("${url}${path}"${opts ? opts + '\n' : ''});
+  return `const res = await fetch("${url}${path}"${opts ? opts + "\n" : ""});
 const data = await res.json();
 console.log(data);`;
 }
 
 function restPython(url: string, method: string, path: string): string {
-  const lower = method.toLowerCase();
+  const upper = method.toUpperCase();
+  const body = upper === "GET" ? "" : ", json={}";
   return `import requests
 
-res = requests.${lower}("${url}${path}")
+res = requests.request("${upper}", "${url}${path}"${body})
 print(res.json())`;
 }
 
 function restCurl(url: string, method: string, path: string): string {
   const upper = method.toUpperCase();
-  if (upper === 'GET') return `curl ${url}${path}`;
+  if (upper === "GET") return `curl ${url}${path}`;
   return `curl -X ${upper} ${url}${path} \\
   -H "Content-Type: application/json" \\
   -d '{}'`;
 }
 
 function restGo(url: string, method: string, path: string): string {
-  return `resp, err := http.${method === 'GET' ? 'Get' : 'Post'}("${url}${path}", "application/json", nil)
+  const upper = method.toUpperCase();
+  const body = upper === "GET" ? "nil" : 'strings.NewReader("{}")';
+  return `req, err := http.NewRequest("${upper}", "${url}${path}", ${body})
+if err != nil {
+    log.Fatal(err)
+}
+${upper === "GET" ? "" : 'req.Header.Set("Content-Type", "application/json")\n'}resp, err := http.DefaultClient.Do(req)
 if err != nil {
     log.Fatal(err)
 }
@@ -176,11 +183,14 @@ fmt.Println(string(body))`;
 }
 
 function restRuby(url: string, method: string, path: string): string {
+  const upper = method.toUpperCase();
+  const hasBody = upper !== "GET";
   return `require "net/http"
 require "json"
 
 uri = URI("${url}${path}")
-res = Net::HTTP.${method.toLowerCase() === 'get' ? 'get_response' : 'post'}(uri)
+request = Net::HTTPGenericRequest.new("${upper}", ${hasBody}, true, uri.request_uri)
+${hasBody ? 'request["Content-Type"] = "application/json"\nrequest.body = "{}"\n' : ""}res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == "https") { |http| http.request(request) }
 puts JSON.parse(res.body)`;
 }
 
@@ -188,7 +198,7 @@ function restJava(url: string, method: string, path: string): string {
   return `var client = HttpClient.newHttpClient();
 var request = HttpRequest.newBuilder()
     .uri(URI.create("${url}${path}"))
-    .${method.toUpperCase() === 'GET' ? 'GET' : `method("${method.toUpperCase()}", HttpRequest.BodyPublishers.ofString("{}"))`}()
+    ${method.toUpperCase() === "GET" ? "" : '.header("Content-Type", "application/json")\n    '}.${method.toUpperCase() === "GET" ? "GET" : `method("${method.toUpperCase()}", HttpRequest.BodyPublishers.ofString("{}"))`}()
     .build();
 var response = client.send(request, HttpResponse.BodyHandlers.ofString());
 System.out.println(response.body());`;
@@ -196,7 +206,7 @@ System.out.println(response.body());`;
 
 type RestGenerator = (url: string, method: string, path: string) => string;
 
-const REST_GENERATORS: Record<Language, RestGenerator> = {
+export const REST_GENERATORS: Record<Language, RestGenerator> = {
   typescript: restTypescript,
   python: restPython,
   curl: restCurl,
@@ -207,67 +217,69 @@ const REST_GENERATORS: Record<Language, RestGenerator> = {
 
 // ---------- Command ----------
 
-export const exampleCommand = new Command('example')
-  .description('Generate usage examples for a mock API')
-  .argument('<slug>', 'API slug')
+export const exampleCommand = new Command("example")
+  .description("Generate usage examples for a mock API")
+  .argument("<slug>", "API slug")
   .option(
-    '--lang <language>',
-    'Language (typescript, python, curl, go, ruby, java)',
+    "--lang <language>",
+    "Language (typescript, python, curl, go, ruby, java)",
   )
   .action(async (slug: string, opts) => {
     try {
       const lang: Language = opts.lang || detectLanguage();
 
-      const result = await executeAction('dotmock_get_api', { apiId: slug });
+      const result = await executeAction("dotmock_get_api", { apiId: slug });
 
       if (!result.success) {
-        error(result.error || 'API not found.');
+        error(result.error || "API not found.");
         process.exitCode = 1;
         return;
       }
 
       const data = result.data || {};
-      const mockUrl = String(data.url || data.mockUrl || `https://${slug}.mock.dotmock.com`);
-      const apiType = String(data.type || 'rest');
+      const mockUrl = String(
+        data.url || data.mockUrl || `https://${slug}.mock.dotmock.com`,
+      );
+      const apiType = String(data.type || "rest");
 
       if (isJsonMode()) {
         const snippets: string[] = [];
-        if (apiType === 'llm') {
+        if (apiType === "llm") {
           snippets.push(LLM_GENERATORS[lang](mockUrl));
         } else {
           const endpoints = (data.endpoints as Record<string, unknown>[]) || [];
           const gen = REST_GENERATORS[lang];
           for (const ep of endpoints.slice(0, 5)) {
             snippets.push(
-              gen(mockUrl, String(ep.method || 'GET'), String(ep.path || '/')),
+              gen(mockUrl, String(ep.method || "GET"), String(ep.path || "/")),
             );
           }
           if (endpoints.length === 0) {
-            snippets.push(gen(mockUrl, 'GET', '/'));
+            snippets.push(gen(mockUrl, "GET", "/"));
           }
         }
         json({ slug, language: lang, type: apiType, mockUrl, snippets });
         return;
       }
 
-      console.log('');
+      console.log("");
       info(`API: ${data.name || slug}`);
       info(`Mock URL: ${chalk.underline(mockUrl)}`);
       info(`Language: ${lang}`);
-      console.log('');
+      console.log("");
 
-      if (apiType === 'llm') {
+      if (apiType === "llm") {
         printCodeBlock(lang, LLM_GENERATORS[lang](mockUrl));
       } else {
         const endpoints = (data.endpoints as Record<string, unknown>[]) || [];
         const gen = REST_GENERATORS[lang];
 
         if (endpoints.length === 0) {
-          printCodeBlock(lang, gen(mockUrl, 'GET', '/'));
+          printCodeBlock(lang, gen(mockUrl, "GET", "/"));
         } else {
           for (const ep of endpoints.slice(0, 5)) {
-            const method = String(ep.method || 'GET');
-            const path = String(ep.path || '/');
+            const method = String(ep.method || "GET");
+            const path = String(ep.path || "/");
             console.log(chalk.dim(`--- ${method} ${path} ---`));
             printCodeBlock(lang, gen(mockUrl, method, path));
           }
@@ -275,7 +287,9 @@ export const exampleCommand = new Command('example')
       }
     } catch (err) {
       if (err instanceof ApiError) {
-        error(`Failed to generate examples (HTTP ${err.status}): ${err.message}`);
+        error(
+          `Failed to generate examples (HTTP ${err.status}): ${err.message}`,
+        );
       } else {
         error(`Failed to generate examples: ${(err as Error).message}`);
       }
@@ -284,8 +298,8 @@ export const exampleCommand = new Command('example')
   });
 
 function printCodeBlock(lang: string, code: string): void {
-  console.log(chalk.dim('```' + lang));
+  console.log(chalk.dim("```" + lang));
   console.log(code);
-  console.log(chalk.dim('```'));
-  console.log('');
+  console.log(chalk.dim("```"));
+  console.log("");
 }

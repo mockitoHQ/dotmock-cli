@@ -10,8 +10,9 @@ import {
   readStructuredFile,
   readStructuredValue,
 } from "../structured-input.js";
+import { parseResponseHook } from "../response-hooks.js";
 
-type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "QUERY";
 
 interface MockApi {
   id?: string;
@@ -32,7 +33,9 @@ interface EndpointOptions {
   delay?: number;
   case: string[];
   fault: string[];
+  responseHook: string[];
   requestSchema?: string;
+  requestExample?: string;
   responseSchema?: string;
   from?: string;
   replace?: boolean;
@@ -42,6 +45,7 @@ interface EndpointDefinition {
   summary?: string;
   description?: string;
   requestSchema?: unknown;
+  requestExample?: unknown;
   responseSchema?: unknown;
   defaultResponse?: {
     status?: number;
@@ -51,26 +55,58 @@ interface EndpointDefinition {
   delay?: number;
   cases?: unknown[];
   faults?: unknown[];
+  responseHooks?: unknown[];
 }
 
 export const createEndpointCommand = new Command("endpoint")
   .description("Create and configure a new endpoint in an existing mock API")
   .requiredOption("--api <id>", "API ID or slug")
-  .requiredOption("--method <method>", "GET, POST, PUT, PATCH, or DELETE")
+  .requiredOption(
+    "--method <method>",
+    "GET, POST, PUT, PATCH, DELETE, or QUERY",
+  )
   .requiredOption("--path <path>", "Endpoint path, for example /users/{id}")
   .option("--summary <text>", "OpenAPI operation summary")
   .option("--description <text>", "OpenAPI operation description")
   .option("--status <code>", "Default response status", parseInteger)
   .option("--body <json>", "Inline JSON or text response body")
-  .option("--body-file <file>", "Read the response body from JSON, YAML, or text")
-  .option("--header <name:value>", "Default response header (repeatable)", collect, [])
+  .option(
+    "--body-file <file>",
+    "Read the response body from JSON, YAML, or text",
+  )
+  .option(
+    "--header <name:value>",
+    "Default response header (repeatable)",
+    collect,
+    [],
+  )
   .option("--delay <ms>", "Artificial response delay", parseNonNegativeInteger)
-  .option("--case <json|@file>", "Conditional response case (repeatable)", collect, [])
-  .option("--fault <json|@file>", "Random fault definition (repeatable)", collect, [])
+  .option(
+    "--case <json|@file>",
+    "Conditional response case (repeatable)",
+    collect,
+    [],
+  )
+  .option(
+    "--fault <json|@file>",
+    "Random fault definition (repeatable)",
+    collect,
+    [],
+  )
+  .option(
+    "--response-hook <api:event|json|@file>",
+    "Webhook API event emitted after the response (repeatable)",
+    collect,
+    [],
+  )
   .option("--request-schema <file>", "Request JSON Schema file")
+  .option("--request-example <json|@file>", "Request JSON example")
   .option("--response-schema <file>", "Response JSON Schema file")
   .option("--from <file>", "Endpoint behavior as JSON or YAML")
-  .option("--replace", "Replace an existing operation at the same method and path")
+  .option(
+    "--replace",
+    "Replace an existing operation at the same method and path",
+  )
   .action(async (opts: EndpointOptions) => {
     try {
       const api = await executeAction<MockApi>("dotmock_get_api", {
@@ -92,11 +128,13 @@ export const createEndpointCommand = new Command("endpoint")
 
       success(`Created ${update.endpoint.method} ${update.endpoint.path}.`);
       info(
-        `Default: HTTP ${update.endpoint.status}; cases: ${update.endpoint.cases}; faults: ${update.endpoint.faults}; delay: ${update.endpoint.delay}ms.`,
+        `Default: HTTP ${update.endpoint.status}; cases: ${update.endpoint.cases}; faults: ${update.endpoint.faults}; response hooks: ${update.endpoint.responseHooks}; delay: ${update.endpoint.delay}ms.`,
       );
     } catch (cause) {
       if (cause instanceof ApiError) {
-        error(`Failed to create endpoint (HTTP ${cause.status}): ${cause.message}`);
+        error(
+          `Failed to create endpoint (HTTP ${cause.status}): ${cause.message}`,
+        );
       } else {
         error(
           `Failed to create endpoint: ${cause instanceof Error ? cause.message : "Unknown error"}`,
@@ -123,7 +161,10 @@ export function buildEndpointUpdate(api: MockApi, opts: EndpointOptions) {
   }
 
   const fileDefinition = opts.from
-    ? (asRecord(readStructuredFile(opts.from), "Endpoint definition") as EndpointDefinition)
+    ? (asRecord(
+        readStructuredFile(opts.from),
+        "Endpoint definition",
+      ) as EndpointDefinition)
     : {};
   const defaultFromFile = fileDefinition.defaultResponse ?? {};
   const body = resolveBody(opts, defaultFromFile.body);
@@ -135,10 +176,14 @@ export function buildEndpointUpdate(api: MockApi, opts: EndpointOptions) {
   };
   const requestSchema = opts.requestSchema
     ? readStructuredFile(opts.requestSchema)
-    : fileDefinition.requestSchema;
+    : (fileDefinition.requestSchema ??
+      (method === "QUERY" ? { type: "object" } : undefined));
+  const requestExample = opts.requestExample
+    ? readStructuredValue(opts.requestExample, "--request-example")
+    : (fileDefinition.requestExample ?? (method === "QUERY" ? {} : undefined));
   const responseSchema = opts.responseSchema
     ? readStructuredFile(opts.responseSchema)
-    : fileDefinition.responseSchema ?? inferSchema(body);
+    : (fileDefinition.responseSchema ?? inferSchema(body));
   const cases = [
     ...(fileDefinition.cases ?? []),
     ...opts.case.map((value) => readStructuredValue(value, "--case")),
@@ -146,6 +191,10 @@ export function buildEndpointUpdate(api: MockApi, opts: EndpointOptions) {
   const faults = [
     ...(fileDefinition.faults ?? []),
     ...opts.fault.map((value) => readStructuredValue(value, "--fault")),
+  ];
+  const responseHooks = [
+    ...(fileDefinition.responseHooks ?? []),
+    ...opts.responseHook.map(parseResponseHook),
   ];
   const delay = opts.delay ?? fileDefinition.delay ?? 0;
   const contentType = headers["Content-Type"] ?? "application/json";
@@ -164,12 +213,12 @@ export function buildEndpointUpdate(api: MockApi, opts: EndpointOptions) {
     ...(delay > 0 ? { delay } : {}),
     ...(cases.length ? { cases } : {}),
     ...(faults.length ? { faults } : {}),
+    ...(responseHooks.length ? { responseHooks } : {}),
   };
 
   const operation: Record<string, unknown> = {
-    summary:
-      opts.summary ?? fileDefinition.summary ?? `${method} ${path}`,
-    ...(opts.description ?? fileDefinition.description
+    summary: opts.summary ?? fileDefinition.summary ?? `${method} ${path}`,
+    ...((opts.description ?? fileDefinition.description)
       ? { description: opts.description ?? fileDefinition.description }
       : {}),
     operationId: operationId(method, path),
@@ -178,7 +227,12 @@ export function buildEndpointUpdate(api: MockApi, opts: EndpointOptions) {
           requestBody: {
             required: true,
             content: {
-              "application/json": { schema: requestSchema },
+              "application/json": {
+                schema: requestSchema,
+                ...(requestExample !== undefined
+                  ? { example: requestExample }
+                  : {}),
+              },
             },
           },
         }
@@ -193,6 +247,7 @@ export function buildEndpointUpdate(api: MockApi, opts: EndpointOptions) {
   pathItem[methodKey] = operation;
   paths[path] = pathItem;
   spec.paths = paths;
+  spec.openapi = "3.2.0";
 
   return {
     openApiSpec: spec,
@@ -202,6 +257,7 @@ export function buildEndpointUpdate(api: MockApi, opts: EndpointOptions) {
       status,
       cases: cases.length,
       faults: faults.length,
+      responseHooks: responseHooks.length,
       delay,
     },
   };
@@ -223,11 +279,11 @@ function resolveBody(
 }
 
 function inferSchema(value: unknown): Record<string, unknown> | undefined {
-  if (value === null) return { nullable: true };
+  if (value === null) return { type: "null" };
   if (Array.isArray(value)) {
     return {
       type: "array",
-      items: value.length ? inferSchema(value[0]) ?? {} : {},
+      items: value.length ? (inferSchema(value[0]) ?? {}) : {},
     };
   }
   if (typeof value === "object") {
@@ -271,15 +327,16 @@ function operationId(method: HttpMethod, path: string): string {
 
 function normalizeMethod(method: string): HttpMethod {
   const value = method.toUpperCase();
-  if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(value)) {
-    throw new Error("Method must be GET, POST, PUT, PATCH, or DELETE.");
+  if (!["GET", "POST", "PUT", "PATCH", "DELETE", "QUERY"].includes(value)) {
+    throw new Error("Method must be GET, POST, PUT, PATCH, DELETE, or QUERY.");
   }
   return value as HttpMethod;
 }
 
 function normalizePath(path: string): string {
   const value = path.startsWith("/") ? path : `/${path}`;
-  if (/\s/.test(value)) throw new Error("Endpoint paths cannot contain spaces.");
+  if (/\s/.test(value))
+    throw new Error("Endpoint paths cannot contain spaces.");
   return value;
 }
 

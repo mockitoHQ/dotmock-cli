@@ -18,10 +18,12 @@
     "cli-table3": "^0.6.5",
     "commander": "^15.0.0",
     "ora": "^9.4.1",
+    "ws": "^8.18.3",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.23.0",
     "typescript": "^5.9.3"
   },

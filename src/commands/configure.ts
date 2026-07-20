@@ -9,6 +9,7 @@ import {
   readStructuredFile,
   readStructuredValue,
 } from "../structured-input.js";
+import { parseResponseHook } from "../response-hooks.js";
 
 interface ActionResult {
   success: boolean;
@@ -41,11 +42,18 @@ const configureEndpointCommand = new Command("endpoint")
   .option("--delay <ms>", "Response delay in milliseconds", parseInt)
   .option("--case <json|@file>", "Conditional response case (repeatable)", collect, [])
   .option("--fault <json|@file>", "Fault injection rule (repeatable)", collect, [])
+  .option(
+    "--response-hook <api:event|json|@file>",
+    "Webhook API event emitted after the response (repeatable)",
+    collect,
+    [],
+  )
   .option("--request-schema <file>", "Request JSON Schema file")
   .option("--from <file>", "Merge endpoint configuration from JSON or YAML")
   .option("--replace", "Replace configuration instead of merging with the current behavior")
   .option("--clear-cases", "Remove every conditional response case")
   .option("--clear-faults", "Remove every fault rule")
+  .option("--clear-response-hooks", "Remove every Response Hook")
   .option("--clear-delay", "Remove the response delay")
   .action(async (opts) => {
     try {
@@ -118,6 +126,15 @@ const configureEndpointCommand = new Command("endpoint")
             ? base.faults
             : [];
       if (faults.length) config.faults = faults;
+
+      const responseHooks = opts.clearResponseHooks
+        ? []
+        : opts.responseHook.length
+          ? opts.responseHook.map(parseResponseHook)
+          : Array.isArray(base.responseHooks)
+            ? base.responseHooks
+            : [];
+      if (responseHooks.length) config.responseHooks = responseHooks;
 
       const params: Record<string, unknown> = {
         apiId: opts.api,

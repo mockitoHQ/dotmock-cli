@@ -62,9 +62,9 @@ const getFixtureCommand = new Command('fixture')
   .requiredOption('--id <id>', 'Fixture ID')
   .action(async (opts) => {
     try {
-      const fixture = await api<Record<string, unknown>>(
-        'GET',
-        `/mock-apis/${opts.api}/llm-fixtures/${opts.id}`,
+      const fixture = await execute<Record<string, unknown>>(
+        'dotmock_get_llm_fixture',
+        { apiId: opts.api, fixtureId: opts.id },
       );
 
       if (isJsonMode()) {

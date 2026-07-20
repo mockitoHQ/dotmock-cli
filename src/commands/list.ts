@@ -86,9 +86,9 @@ const listFixturesCommand = new Command("fixtures")
   .requiredOption("--api <slug>", "API slug")
   .action(async (opts) => {
     try {
-      const fixtures = await api<Record<string, unknown>[]>(
-        "GET",
-        `/mock-apis/${opts.api}/llm-fixtures`,
+      const fixtures = await execute<Record<string, unknown>[]>(
+        "dotmock_list_llm_fixtures",
+        { apiId: opts.api },
       );
 
       if (isJsonMode()) {

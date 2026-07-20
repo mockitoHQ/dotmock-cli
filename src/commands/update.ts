@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { api, ApiError } from "../client.js";
 import { success, error, json, isJsonMode } from "../output.js";
 import { asRecord, readStructuredFile } from "../structured-input.js";
+import { executeAction as execute } from "../actions.js";
 
 interface ActionResult {
   success: boolean;
@@ -126,10 +127,9 @@ const updateFixtureCommand = new Command("fixture")
         return;
       }
 
-      const result = await api(
-        "PATCH",
-        `/mock-apis/${opts.api}/llm-fixtures/${opts.id}`,
-        body,
+      const result = await execute<Record<string, unknown>>(
+        "dotmock_update_llm_fixture",
+        { apiId: opts.api, fixtureId: opts.id, ...body },
       );
 
       if (isJsonMode()) {

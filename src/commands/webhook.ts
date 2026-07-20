@@ -56,7 +56,7 @@ eventCommand
   .option('--name <name>', 'Display name')
   .option('--description <text>', 'Event description')
   .option('--from <file>', 'Read event body template or full definition JSON')
-  .option('--content-type <type>', 'Payload content type', 'application/json')
+  .option('--content-type <type>', 'Payload content type')
   .option('--header <key:value>', 'Header to include when delivering', collect, [])
   .option('--disabled', 'Create event disabled')
   .action(async (opts) => {
@@ -70,8 +70,16 @@ eventCommand
       payload.eventKey = opts.event;
       if (opts.name) payload.name = opts.name;
       if (opts.description) payload.description = opts.description;
-      payload.contentType = opts.contentType;
-      payload.headers = parseHeaders(opts.header);
+      payload.contentType =
+        opts.contentType || payload.contentType || 'application/json';
+      if (opts.header.length > 0) {
+        payload.headers = {
+          ...(isPlainObject(payload.headers) ? payload.headers : {}),
+          ...parseHeaders(opts.header),
+        };
+      } else if (!isPlainObject(payload.headers)) {
+        payload.headers = {};
+      }
       payload.enabled = opts.disabled ? false : payload.enabled ?? true;
 
       const event = await executeAction<WebhookEvent>(
@@ -763,4 +771,3 @@ function hasEventDefinitionKeys(value: Record<string, unknown>): boolean {
     'contentType' in value
   );
 }
-

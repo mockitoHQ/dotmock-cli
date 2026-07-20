@@ -94,6 +94,31 @@ async function createCliAuthSession(): Promise<CliAuthSessionResponse> {
   return (await response.json()) as CliAuthSessionResponse;
 }
 
+export async function connectCliAuthSession(
+  setupId: string,
+): Promise<CliAuthSessionResponse> {
+  const response = await fetch(
+    `${getBaseUrl()}/auth/cli/sessions/${encodeURIComponent(setupId)}/connect`,
+    { method: 'POST' },
+  );
+
+  if (!response.ok) {
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = await response.text();
+    }
+    throw new ApiError(response.status, body);
+  }
+
+  const session = (await response.json()) as Omit<
+    CliAuthSessionResponse,
+    'deviceCode'
+  >;
+  return { ...session, deviceCode: setupId };
+}
+
 async function pollCliAuthSession(
   deviceCode: string,
 ): Promise<CliAuthPollResponse> {
@@ -198,15 +223,18 @@ async function loginWithApiKey(apiKey: string): Promise<void> {
 export const loginCommand = new Command('login')
   .description('Authenticate with DotMock in your browser')
   .option('--api-key <key>', 'Authenticate directly with an API key for CI or headless environments')
+  .option('--setup-id <id>', 'Connect to a browser setup session and continue automatically')
   .option('--print-url', 'Print the browser login URL without opening it')
-  .action(async (opts: { apiKey?: string; printUrl?: boolean }) => {
+  .action(async (opts: { apiKey?: string; setupId?: string; printUrl?: boolean }) => {
     try {
       if (opts.apiKey) {
         await loginWithApiKey(opts.apiKey);
         return;
       }
 
-      const session = await createCliAuthSession();
+      const session = opts.setupId
+        ? await connectCliAuthSession(opts.setupId)
+        : await createCliAuthSession();
       const loginUrl = getLoginUrl(session.userCode);
 
       if (isJsonMode()) {
@@ -223,6 +251,10 @@ export const loginCommand = new Command('login')
       if (opts.printUrl) {
         console.log(loginUrl);
         return;
+      }
+
+      if (opts.setupId) {
+        success('CLI connected to DotMock setup.');
       }
 
       try {
