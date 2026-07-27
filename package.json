@@ -1,6 +1,6 @@
 {
   "name": "dotmock",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "CLI for DotMock — create, manage, and use mock APIs",
   "type": "module",
   "bin": {

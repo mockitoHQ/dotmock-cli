@@ -25,7 +25,7 @@ export function getBaseUrl(): string {
   if (envUrl) return envUrl;
 
   const config = readConfig();
-  return config?.baseUrl ?? 'https://api.dotmock.com';
+  return config?.baseUrl ?? 'https://dotmock.com/api';
 }
 
 export function getAppUrl(): string {

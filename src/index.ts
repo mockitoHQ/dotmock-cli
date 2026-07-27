@@ -28,7 +28,7 @@ const program = new Command();
 program
   .name("dotmock")
   .description("CLI for DotMock — create, manage, and use mock APIs")
-  .version("0.1.0")
+  .version("0.1.1")
   .option("--json", "Emit machine-readable JSON for coding agents and CI");
 
 program.addCommand(loginCommand);

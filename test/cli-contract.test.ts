@@ -68,4 +68,14 @@ describe("CLI lifecycle contract", () => {
     }
     assert.match(help, /--json/);
   });
+
+  it("reports the package release version", () => {
+    const version = execFileSync(
+      process.execPath,
+      ["--import", "tsx", "src/index.ts", "--version"],
+      { encoding: "utf8" },
+    ).trim();
+
+    assert.equal(version, "0.1.1");
+  });
 });
