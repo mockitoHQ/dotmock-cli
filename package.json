@@ -1,23 +1,37 @@
 {
-  "name": "dotmock",
+  "name": "@dotmock/cli",
   "version": "0.1.1",
   "description": "CLI for DotMock — create, manage, and use mock APIs",
+  "keywords": [
+    "dotmock",
+    "api-mocking",
+    "mock-server",
+    "cli",
+    "testing"
+  ],
+  "homepage": "https://dotmock.com/docs/guides/cli",
+  "bugs": {
+    "url": "https://dotmock.com/contact"
+  },
+  "license": "UNLICENSED",
   "type": "module",
   "bin": {
-    "dotmock": "./dist/index.js"
+    "dotmock": "dist/index.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "type-check": "tsc --noEmit",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run type-check && npm test",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "chalk": "^5.6.2",
     "cli-table3": "^0.6.5",
-    "commander": "^15.0.0",
-    "ora": "^9.4.1",
+    "commander": "^13.1.0",
+    "ora": "^8.2.0",
     "ws": "^8.18.3",
     "yaml": "^2.9.0"
   },
@@ -32,5 +46,8 @@
   ],
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
