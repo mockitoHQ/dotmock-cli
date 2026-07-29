@@ -3,12 +3,13 @@
 Build, configure, exercise, and inspect controlled API environments from a
 terminal or coding agent.
 
-## Start without installing
+## Install
 
 Node.js 18 or newer is required.
 
 ```sh
-npx --yes @dotmock/cli@latest login
+npm install --global @dotmock/cli@latest
+dotmock login
 ```
 
 The command opens DotMock in your browser, asks you to approve a team-scoped
@@ -18,15 +19,7 @@ To connect an onboarding session that is already open in the browser, run the
 exact command shown there:
 
 ```sh
-npx --yes @dotmock/cli@latest login --setup-id <setup-id>
-```
-
-## Install globally
-
-```sh
-npm install --global @dotmock/cli
-dotmock login
-dotmock status
+dotmock login --setup-id <setup-id>
 ```
 
 ## Use in CI
@@ -36,13 +29,7 @@ inject it without writing credentials to the repository:
 
 ```sh
 export DOTMOCK_API_KEY=mck_...
-npx --yes @dotmock/cli@latest --json status
-```
-
-Use a pinned package version in repeatable production pipelines:
-
-```sh
-npx --yes @dotmock/cli@0.1.1 --json status
+dotmock --json status
 ```
 
 ## Common workflows

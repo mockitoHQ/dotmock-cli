@@ -1,6 +1,6 @@
 {
   "name": "@dotmock/cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "CLI for DotMock — create, manage, and use mock APIs",
   "keywords": [
     "dotmock",
