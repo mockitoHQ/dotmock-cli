@@ -75,8 +75,8 @@ export const serveCommand = new Command("serve")
         persist: !!opts.detach,
         inheritStdio: !opts.detach && !isJsonMode(),
       });
-      const urls = apiUrls(loaded.config, server.state.baseUrl);
-      const env = sdkEnv(loaded.config, server.state.baseUrl);
+      const urls = apiUrls(loaded.apis, server.state.baseUrl);
+      const env = sdkEnv(loaded.apis, server.state.baseUrl);
       if (opts.detach) writeState(server.state);
 
       if (isJsonMode()) {
@@ -88,7 +88,7 @@ export const serveCommand = new Command("serve")
           urls.map((url) => [`${url.name} (${url.subdomain})`, url.type, url.baseUrl, url.openaiBaseUrl ?? ""]),
         );
         console.log(Object.entries(env).map(([key, value]) => `export ${key}=${value}`).join("\n"));
-        info("Journal: GET /__dotmock/journal?api=<subdomain>   Reset: POST /__dotmock/reset   Edits to the config hot-reload.");
+        info("Journal: dotmock llm journal <subdomain> --local   Reset: dotmock llm reset <subdomain> --local   Edits to the config hot-reload.");
         info(opts.detach ? `Stop with: dotmock serve stop --port ${opts.port}` : "Press Ctrl+C to stop.");
       }
 

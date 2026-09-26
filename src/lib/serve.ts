@@ -4,14 +4,14 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { ProjectConfig } from "./project-config.js";
+import type { ResolvedApi } from "./project-config.js";
 
 const execFileAsync = promisify(execFile);
 
 /** Contract C6: image and local-mode environment. */
 export const DEFAULT_SERVER_IMAGE = "ghcr.io/dotmock/dotmock-server:latest";
 export const SERVER_BINARY = "dotmock-server";
-export const CONTAINER_CONFIG_DIR = "/dotmock";
+export const CONTAINER_CONFIG_DIR = "/config";
 export const HEALTH_PATH = "/__dotmock/health";
 
 export type RuntimePreference = "auto" | "binary" | "docker";
@@ -111,9 +111,9 @@ export function buildDockerArgs(options: {
   ];
 }
 
-export function apiUrls(config: ProjectConfig, baseUrl: string): ApiUrl[] {
+export function apiUrls(apis: ResolvedApi[], baseUrl: string): ApiUrl[] {
   const root = baseUrl.replace(/\/+$/, "");
-  return config.apis.map((api) => {
+  return apis.map((api) => {
     const prefixed = `${root}/${api.subdomain}`;
     return {
       name: api.name,
@@ -126,8 +126,8 @@ export function apiUrls(config: ProjectConfig, baseUrl: string): ApiUrl[] {
 }
 
 /** Environment variables exported for SDKs (first LLM API wins). */
-export function sdkEnv(config: ProjectConfig, baseUrl: string): Record<string, string> {
-  const urls = apiUrls(config, baseUrl);
+export function sdkEnv(apis: ResolvedApi[], baseUrl: string): Record<string, string> {
+  const urls = apiUrls(apis, baseUrl);
   const llm = urls.find((url) => url.type === "llm");
   const env: Record<string, string> = { DOTMOCK_URL: baseUrl.replace(/\/+$/, "") };
   if (llm) {
@@ -292,7 +292,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const fd = openSync(logFile, "a");
     stdio = ["ignore", fd, fd];
   }
-  const child = spawn(runtime.command, [], { env, stdio, detached: !!options.persist, cwd: dirname(configPath) });
+  const child = spawn(runtime.command, ["--local", "--config", configPath, "--port", String(options.port)], { env, stdio, detached: !!options.persist, cwd: dirname(configPath) });
   let exitReason: string | null = null;
   child.on("error", (cause) => { exitReason = `failed to start ${runtime.command}: ${cause.message}`; });
   child.on("exit", (code, signal) => { exitReason = `${SERVER_BINARY} exited (${signal ?? code})${logFile ? `; see ${logFile}` : ""}`; });

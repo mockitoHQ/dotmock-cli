@@ -34,11 +34,11 @@ file. With `--detach` it returns once healthy; stop it with
 Project file format (JSON Schema: `schemas/dotmock-project.schema.json`):
 
 ```yaml
-schemaVersion: dotmock/project-v1
+version: 1
 apis:
   - name: Assistant
-    subdomain: assistant        # X-Dotmock-Api header or /assistant/... path prefix
-    type: llm                   # llm | openapi
+    subdomain: assistant        # X-Dotmock-Api header or /assistant/... prefix (default: slug of name)
+    type: llm                   # llm | openapi (inferred from fixtures/spec when omitted)
     settings: { fallback: { type: none } }
     fixtures:
       - id: greeting
@@ -50,10 +50,12 @@ apis:
     subdomain: orders
     type: openapi
     spec: ./openapi.yaml        # or an inline OpenAPI object
+  - file: ./checkout.yaml       # include a `dotmock config pull` (dotmock/v2) file
 ```
 
 Fixtures and settings use the same shapes as cloud LLM fixtures, so they can be
-moved between a project file and DotMock unchanged.
+moved between a project file and DotMock unchanged. The same file runs directly
+with `dotmock-server --local --config dotmock.yaml`.
 
 ## LLM workflows
 

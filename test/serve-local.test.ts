@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import {
   loadProjectConfig,
   normalizeProjectConfig,
+  resolveApis,
   starterLlmProject,
   validateProjectConfig,
 } from "../src/lib/project-config.js";
@@ -37,30 +38,47 @@ describe("dotmock.yaml project config", () => {
     }
   });
 
-  it("accepts the single-API shorthand and rejects cloud definitions", () => {
+  it("accepts the single-API shorthand and dotmock/v2 definitions like the server loader", () => {
     assert.equal(normalizeProjectConfig({ name: "A", subdomain: "a", type: "llm", fixtures: [] }).apis.length, 1);
-    assert.throws(() => normalizeProjectConfig({ schemaVersion: "dotmock/v2", rules: [] }), /per-API cloud definition/);
+    const v2 = normalizeProjectConfig({ schemaVersion: "dotmock/v2", id: "api-1", name: "Checkout Flow", kind: "rest", protocol: {}, rules: [] });
+    assert.deepEqual(validateProjectConfig(v2), []);
+    assert.deepEqual(resolveApis(v2), [{ name: "Checkout Flow", subdomain: "checkout-flow", type: "openapi" }]);
+  });
+
+  it("applies server defaults: subdomain from name, type from fixtures/spec, fixture ids from names", () => {
+    const config = normalizeProjectConfig({
+      apis: [
+        { name: "My Bot", fixtures: [{ match: { userMessage: "hi" }, response: { content: { a: 1 } } }] },
+        { name: "Orders", type: "rest", spec: { openapi: "3.0.3", paths: {} } },
+      ],
+    });
+    assert.deepEqual(validateProjectConfig(config), []);
+    assert.deepEqual(resolveApis(config).map((a) => `${a.subdomain}:${a.type}`), ["my-bot:llm", "orders:openapi"]);
   });
 
   it("reports structural errors", () => {
     const issues = validateProjectConfig({
       apis: [
-        { name: "A", subdomain: "Bad_Sub", type: "llm", fixtures: [{ name: "x" }] },
+        { name: "A", subdomain: "Bad_Sub", type: "llm", fixtures: [{ name: "x" }, { name: "x", response: { error: { status: 200 } } }] },
         { name: "B", subdomain: "b", type: "openapi", spec: "./missing.yaml" },
         { name: "C", subdomain: "b", type: "graphql" as never },
+        { file: "./nope.yaml" },
       ],
     });
     const paths = issues.filter((i) => i.severity === "error").map((i) => i.path);
-    assert.deepEqual(paths.sort(), ["/apis/0/fixtures/0", "/apis/0/subdomain", "/apis/1/spec", "/apis/2/subdomain", "/apis/2/type"].sort());
+    assert.deepEqual(paths.sort(), [
+      "/apis/0/fixtures/0/response", "/apis/0/fixtures/1/id", "/apis/0/fixtures/1/response/error/status",
+      "/apis/0/subdomain", "/apis/1/spec", "/apis/2/subdomain", "/apis/2/type", "/apis/3/file",
+    ].sort());
   });
 
   it("derives per-API URLs and SDK env vars", () => {
-    const config = starterLlmProject("Chat", "chat");
-    assert.deepEqual(apiUrls(config, "http://127.0.0.1:8080")[0], {
+    const apis = resolveApis(starterLlmProject("Chat", "chat"));
+    assert.deepEqual(apiUrls(apis, "http://127.0.0.1:8080")[0], {
       name: "Chat", subdomain: "chat", type: "llm",
       baseUrl: "http://127.0.0.1:8080/chat", openaiBaseUrl: "http://127.0.0.1:8080/chat/v1",
     });
-    assert.equal(sdkEnv(config, "http://127.0.0.1:8080").OPENAI_BASE_URL, "http://127.0.0.1:8080/chat/v1");
+    assert.equal(sdkEnv(apis, "http://127.0.0.1:8080").OPENAI_BASE_URL, "http://127.0.0.1:8080/chat/v1");
   });
 });
 
@@ -69,9 +87,9 @@ describe("serve runtime selection", () => {
     const args = buildDockerArgs({ configPath: "/work/proj/dotmock.yaml", port: 9000, image: "img:tag", detach: true });
     assert.deepEqual(args.slice(0, 2), ["run", "-d"]);
     assert.ok(args.includes("127.0.0.1:9000:8080"));
-    assert.ok(args.includes("/work/proj:/dotmock:ro"));
+    assert.ok(args.includes("/work/proj:/config:ro"));
     assert.ok(args.includes("DOTMOCK_LOCAL_MODE=true"));
-    assert.ok(args.includes("DOTMOCK_LOCAL_CONFIG=/dotmock/dotmock.yaml"));
+    assert.ok(args.includes("DOTMOCK_LOCAL_CONFIG=/config/dotmock.yaml"));
     assert.equal(args.at(-1), "img:tag");
   });
 
@@ -174,5 +192,14 @@ describe("loadProjectConfig", () => {
     const loaded = loadProjectConfig(join(dir, "dotmock.yaml"));
     assert.deepEqual(loaded.issues, []);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("compatibility with dotmock-server's example config", () => {
+  const example = fileURLToPath(new URL("../../dotmock-server/examples/local/dotmock.yaml", import.meta.url));
+  it("validates and resolves the server's examples/local/dotmock.yaml", { skip: !existsSync(example) && "sibling dotmock-server checkout not found" }, () => {
+    const loaded = loadProjectConfig(example);
+    assert.deepEqual(loaded.issues.filter((i) => i.severity === "error"), []);
+    assert.deepEqual(loaded.apis.map((a) => `${a.subdomain}:${a.type}`), ["assistant:llm", "orders:openapi"]);
   });
 });

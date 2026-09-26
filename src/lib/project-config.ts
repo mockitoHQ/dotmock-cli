@@ -4,40 +4,52 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 /**
  * Local project file (`dotmock.yaml`) consumed by `dotmock serve` and by
- * dotmock-server in local mode (DOTMOCK_LOCAL_MODE=true, DOTMOCK_LOCAL_CONFIG=...).
+ * dotmock-server in local mode (`--local --config <file>` or
+ * DOTMOCK_LOCAL_MODE=true + DOTMOCK_LOCAL_CONFIG). Mirrors the server loader
+ * (dotmock-server pkg/local/config.go):
  *
- * This is distinct from the per-API cloud definition that `dotmock config pull`
- * writes (`schemaVersion: dotmock/v2`): a project file describes one or more
- * APIs that run together offline. Fixture and settings objects use exactly the
- * shapes stored in `apiSpecifications.specification` (backend LlmFixtureShapeDto /
- * UpdateLlmSettingsDto, server pkg/llm/types.go), so fixtures can be copied
- * between a project file and the cloud unchanged.
+ *   version: 1                 # optional
+ *   apis:
+ *     - name, subdomain?, type: llm|openapi|rest, defaultModel?, settings?, fixtures?, spec?, state?
+ *     - file: ./pulled.yaml    # include a `dotmock config pull` (dotmock/v2) file; sibling keys override
+ *
+ * A single API at the top level, or a single dotmock/v2 definition, also works.
+ * Fixture and settings objects use the cloud shapes (server pkg/llm/types.go), with
+ * YAML conveniences: omitted id/name/priority/enabled/match get defaults, and object
+ * values for response.content / toolCalls[].arguments / .result are JSON-encoded.
  *
  * JSON Schema: schemas/dotmock-project.schema.json
  */
-export const PROJECT_SCHEMA_VERSION = "dotmock/project-v1";
+export const PROJECT_FORMAT_VERSION = 1;
 
-export type ProjectApiType = "llm" | "openapi";
+export type ProjectApiType = "llm" | "openapi" | "rest";
 
 export interface ProjectApi {
-  name: string;
-  /** Selects the API: `X-Dotmock-Api: <subdomain>` header or `/<subdomain>/...` path prefix. */
-  subdomain: string;
-  type: ProjectApiType;
-  /** LLM: default model echoed when a request omits one. */
+  name?: string;
+  /** `X-Dotmock-Api: <subdomain>`, `/<subdomain>/...` prefix, or `<subdomain>.localhost`. Defaults to slug(name). */
+  subdomain?: string;
+  type?: ProjectApiType;
   defaultModel?: string;
-  /** LLM: runtime settings (chaos, fallback, vcrUpstreams, mode, metricsEnabled). */
   settings?: Record<string, unknown>;
-  /** LLM: fixtures, evaluated by ascending priority, first match wins. */
   fixtures?: Array<Record<string, unknown>>;
   /** OpenAPI: inline document or a path relative to the project file. */
   spec?: string | Record<string, unknown>;
+  /** Include another file (e.g. `dotmock config pull` output). */
+  file?: string;
   [key: string]: unknown;
 }
 
 export interface ProjectConfig {
-  schemaVersion?: string;
+  version?: number;
   apis: ProjectApi[];
+  [key: string]: unknown;
+}
+
+/** An API after `file:` includes and defaults are applied. */
+export interface ResolvedApi {
+  name: string;
+  subdomain: string;
+  type: "llm" | "openapi";
 }
 
 export interface ConfigIssue {
@@ -48,71 +60,158 @@ export interface ConfigIssue {
 
 const SUBDOMAIN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
+export function slugify(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/g, "");
+}
+
 export function parseProjectConfig(source: string, file = "dotmock.yaml"): unknown {
   return file.endsWith(".json") ? JSON.parse(source) : parseYaml(source);
 }
 
-/** Accepts a project file or the single-API shorthand (top-level name/type/fixtures). */
+/** Accepts `{apis: [...]}`, a single top-level API, or a single dotmock/v2 definition. */
 export function normalizeProjectConfig(value: unknown): ProjectConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("dotmock.yaml must be a YAML or JSON object.");
   }
   const record = value as Record<string, unknown>;
-  if (record.schemaVersion === "dotmock/v2") {
-    throw new Error(
-      "This file is a per-API cloud definition (dotmock config pull). `dotmock serve` needs a project file with an `apis:` list — run `dotmock init --llm` for an example.",
-    );
-  }
-  if (Array.isArray(record.apis)) {
+  if (record.apis !== undefined) {
+    if (!Array.isArray(record.apis)) throw new Error("`apis` must be a list of APIs.");
     return { ...record, apis: record.apis as ProjectApi[] } as ProjectConfig;
   }
-  if (record.type || record.fixtures || record.spec) {
-    const { schemaVersion, ...api } = record;
-    return { schemaVersion: schemaVersion as string | undefined, apis: [api as ProjectApi] };
+  return { apis: [record as ProjectApi] };
+}
+
+function readInclude(ref: string, baseDir: string): Record<string, unknown> {
+  const path = isAbsolute(ref) ? ref : resolve(baseDir, ref);
+  if (!existsSync(path)) throw new Error(`file not found: ${path}`);
+  const value = parseProjectConfig(readFileSync(path, "utf8"), path);
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${path} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+/** Apply `file:` includes (sibling keys override) — same as the server loader. */
+export function expandApi(api: ProjectApi, baseDir: string): Record<string, unknown> {
+  if (typeof api.file !== "string") return api;
+  const { file, ...overrides } = api;
+  return { ...readInclude(file, baseDir), ...overrides };
+}
+
+function inferType(obj: Record<string, unknown>): string {
+  const raw = String(obj.type ?? obj.kind ?? "").toLowerCase();
+  if (raw) return raw;
+  if (obj.schemaVersion === "dotmock/v2") return "";
+  if (obj.fixtures !== undefined) return "llm";
+  if (obj.spec !== undefined) return "openapi";
+  return "";
+}
+
+export function resolveApi(obj: Record<string, unknown>): ResolvedApi | null {
+  const id = typeof obj.id === "string" ? obj.id : "";
+  const name = typeof obj.name === "string" ? obj.name : "";
+  const subdomain = (typeof obj.subdomain === "string" && obj.subdomain ? obj.subdomain : slugify(name || id)).toLowerCase();
+  const type = inferType(obj);
+  if (!subdomain) return null;
+  return { name: name || subdomain, subdomain, type: type === "llm" ? "llm" : "openapi" };
+}
+
+export function resolveApis(config: ProjectConfig, baseDir = process.cwd()): ResolvedApi[] {
+  const out: ResolvedApi[] = [];
+  for (const api of config.apis) {
+    try {
+      const resolved = resolveApi(expandApi(api, baseDir));
+      if (resolved) out.push(resolved);
+    } catch {
+      // reported by validateProjectConfig
+    }
   }
-  throw new Error("dotmock.yaml must contain an `apis:` list.");
+  return out;
+}
+
+function validateFixture(fixture: Record<string, unknown>, fat: string, push: (s: ConfigIssue["severity"], p: string, m: string) => void): void {
+  const response = (fixture.response ?? {}) as Record<string, unknown>;
+  const workflow = (fixture.workflow ?? {}) as Record<string, any>;
+  const ws = (fixture.ws ?? {}) as Record<string, any>;
+  const has = (value: unknown) => (Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null && value !== "");
+  const hasResponse =
+    has(response.content) || has(response.reasoning) || has(response.toolCalls) || has(response.error) || has(response.embedding) ||
+    has(workflow.run?.toolCalls) || has(workflow.response?.content) || has(ws.events);
+  if (!hasResponse) push("error", `${fat}/response`, "Fixture has no response (set response.content, response.toolCalls, response.error or workflow).");
+  if (fixture.priority !== undefined && !Number.isInteger(fixture.priority)) push("error", `${fat}/priority`, "priority must be an integer.");
+  if (fixture.protocol !== undefined && !["http", "ws", "both"].includes(String(fixture.protocol))) {
+    push("error", `${fat}/protocol`, "protocol must be http, ws or both.");
+  }
+  const match = (fixture.match ?? {}) as Record<string, unknown>;
+  for (const field of ["userMessage", "systemPrompt", "inputText"]) {
+    const value = match[field];
+    if (typeof value === "string" && value.length > 2 && value.startsWith("/") && value.endsWith("/")) {
+      try { new RegExp(value.slice(1, -1)); } catch (cause) { push("error", `${fat}/match/${field}`, `invalid regex: ${(cause as Error).message}`); }
+    }
+  }
+  const error = response.error as Record<string, unknown> | undefined;
+  if (error && (typeof error.status !== "number" || error.status < 400 || error.status > 599)) {
+    push("error", `${fat}/response/error/status`, "must be an HTTP error status 400-599.");
+  }
+  const calls = [...((response.toolCalls as unknown[]) ?? []), ...((workflow.run?.toolCalls as unknown[]) ?? [])];
+  calls.forEach((call, ci) => {
+    const c = (call ?? {}) as Record<string, unknown>;
+    if (typeof c.name !== "string" || !c.name) push("error", `${fat}`, `tool call #${ci + 1} has no name.`);
+    if (typeof c.arguments === "string" && c.arguments) {
+      try { JSON.parse(c.arguments); } catch { push("error", fat, `tool call ${String(c.name)} arguments must be valid JSON (or a YAML object).`); }
+    }
+  });
 }
 
 export function validateProjectConfig(config: ProjectConfig, baseDir = process.cwd()): ConfigIssue[] {
   const issues: ConfigIssue[] = [];
   const push = (severity: ConfigIssue["severity"], path: string, message: string) => issues.push({ severity, path, message });
 
-  if (config.schemaVersion && config.schemaVersion !== PROJECT_SCHEMA_VERSION) {
-    push("warning", "/schemaVersion", `Unknown schemaVersion ${config.schemaVersion}; expected ${PROJECT_SCHEMA_VERSION}.`);
+  if (config.version !== undefined && config.version !== PROJECT_FORMAT_VERSION) {
+    push("warning", "/version", `Unknown version ${String(config.version)}; expected ${PROJECT_FORMAT_VERSION}.`);
   }
-  if (!config.apis.length) push("error", "/apis", "Define at least one API.");
+  if (!config.apis.length) push("error", "/apis", "At least one API is required.");
 
   const seen = new Set<string>();
-  config.apis.forEach((api, index) => {
+  config.apis.forEach((entry, index) => {
     const at = `/apis/${index}`;
-    if (!api || typeof api !== "object") { push("error", at, "API must be an object."); return; }
-    if (typeof api.name !== "string" || !api.name.trim()) push("error", `${at}/name`, "name is required.");
-    if (typeof api.subdomain !== "string" || !SUBDOMAIN.test(api.subdomain)) {
-      push("error", `${at}/subdomain`, "subdomain is required (lowercase letters, digits, hyphens).");
-    } else if (seen.has(api.subdomain)) {
-      push("error", `${at}/subdomain`, `Duplicate subdomain ${api.subdomain}.`);
-    } else seen.add(api.subdomain);
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) { push("error", at, "API must be an object."); return; }
+    let api: Record<string, unknown>;
+    try {
+      api = expandApi(entry, baseDir);
+    } catch (cause) {
+      push("error", `${at}/file`, (cause as Error).message);
+      return;
+    }
+    if (api.schemaVersion !== undefined && api.schemaVersion !== "dotmock/v2") {
+      push("error", `${at}/schemaVersion`, `unsupported schemaVersion ${String(api.schemaVersion)} (expected dotmock/v2).`);
+      return;
+    }
+    const resolved = resolveApi(api);
+    if (!resolved) { push("error", at, "Each API needs a subdomain or name."); return; }
+    if (!SUBDOMAIN.test(resolved.subdomain)) {
+      push("error", `${at}/subdomain`, `${resolved.subdomain} must be lowercase letters, digits and hyphens (max 63).`);
+    } else if (seen.has(resolved.subdomain)) {
+      push("error", `${at}/subdomain`, `Duplicate subdomain ${resolved.subdomain}.`);
+    } else seen.add(resolved.subdomain);
 
-    if (api.type === "llm") {
-      if (api.fixtures !== undefined && !Array.isArray(api.fixtures)) push("error", `${at}/fixtures`, "fixtures must be a list.");
-      const fixtures = Array.isArray(api.fixtures) ? api.fixtures : [];
-      if (!fixtures.length) push("warning", `${at}/fixtures`, "No fixtures: every request falls through to settings.fallback.");
-      const ids = new Set<string>();
+    if (api.schemaVersion === "dotmock/v2") return; // compiled by the server, validated by `dotmock config validate`
+    const type = inferType(api);
+    if (type === "llm") {
+      if (api.fixtures !== undefined && !Array.isArray(api.fixtures)) { push("error", `${at}/fixtures`, "fixtures must be a list."); return; }
+      const fixtures = (api.fixtures as Array<Record<string, unknown>> | undefined) ?? [];
+      if (!fixtures.length) push("warning", `${at}/fixtures`, "LLM API has no fixtures; every request will fall through.");
+      const ids = new Map<string, number>();
       fixtures.forEach((fixture, fi) => {
         const fat = `${at}/fixtures/${fi}`;
-        if (!fixture || typeof fixture !== "object") { push("error", fat, "Fixture must be an object."); return; }
-        if (typeof fixture.name !== "string" || !fixture.name) push("error", `${fat}/name`, "name is required.");
-        if (typeof fixture.id === "string") {
-          if (ids.has(fixture.id)) push("error", `${fat}/id`, `Duplicate fixture id ${fixture.id}.`);
-          ids.add(fixture.id);
-        }
-        if (fixture.priority !== undefined && !Number.isInteger(fixture.priority)) push("error", `${fat}/priority`, "priority must be an integer.");
-        if (!fixture.response && !fixture.workflow && !fixture.ws) push("error", fat, "Fixture needs response, workflow, or ws.");
+        if (!fixture || typeof fixture !== "object" || Array.isArray(fixture)) { push("error", fat, "Fixture must be an object."); return; }
+        const id = typeof fixture.id === "string" ? fixture.id : typeof fixture.name === "string" && fixture.name ? slugify(fixture.name) : `fixture-${fi + 1}`;
+        if (ids.has(id)) push("error", `${fat}/id`, `Duplicate fixture id ${id} (also fixtures[${ids.get(id)}]).`);
+        ids.set(id, fi);
+        validateFixture(fixture, fat, push);
       });
-      if (api.settings !== undefined && (typeof api.settings !== "object" || Array.isArray(api.settings))) {
+      if (api.settings !== undefined && api.settings !== null && (typeof api.settings !== "object" || Array.isArray(api.settings))) {
         push("error", `${at}/settings`, "settings must be an object.");
       }
-    } else if (api.type === "openapi") {
+    } else if (type === "openapi" || type === "rest") {
       if (typeof api.spec === "string") {
         const specPath = isAbsolute(api.spec) ? api.spec : resolve(baseDir, api.spec);
         if (!existsSync(specPath)) push("error", `${at}/spec`, `Spec file not found: ${specPath}`);
@@ -120,7 +219,7 @@ export function validateProjectConfig(config: ProjectConfig, baseDir = process.c
         push("error", `${at}/spec`, "spec is required (inline OpenAPI document or a file path).");
       }
     } else {
-      push("error", `${at}/type`, "type must be llm or openapi.");
+      push("error", `${at}/type`, `type must be "llm" or "openapi" (got "${type}").`);
     }
   });
   return issues;
@@ -129,6 +228,7 @@ export function validateProjectConfig(config: ProjectConfig, baseDir = process.c
 export interface LoadedProject {
   file: string;
   config: ProjectConfig;
+  apis: ResolvedApi[];
   issues: ConfigIssue[];
 }
 
@@ -136,7 +236,8 @@ export function loadProjectConfig(file: string): LoadedProject {
   const path = resolve(file);
   if (!existsSync(path)) throw new Error(`Config file not found: ${path}. Run \`dotmock init --llm\` to create one.`);
   const config = normalizeProjectConfig(parseProjectConfig(readFileSync(path, "utf8"), path));
-  return { file: path, config, issues: validateProjectConfig(config, dirname(path)) };
+  const baseDir = dirname(path);
+  return { file: path, config, apis: resolveApis(config, baseDir), issues: validateProjectConfig(config, baseDir) };
 }
 
 export function assertValidProject(loaded: LoadedProject): void {
@@ -151,7 +252,7 @@ export function assertValidProject(loaded: LoadedProject): void {
 /** Starter LLM project for `dotmock init --llm`. */
 export function starterLlmProject(name = "Assistant", subdomain = "assistant"): ProjectConfig {
   return {
-    schemaVersion: PROJECT_SCHEMA_VERSION,
+    version: PROJECT_FORMAT_VERSION,
     apis: [
       {
         name,
@@ -252,9 +353,10 @@ export function starterLlmProject(name = "Assistant", subdomain = "assistant"): 
 }
 
 const STARTER_HEADER = `# DotMock local project — served by \`dotmock serve\` (no account needed).
-# Schema: https://dotmock.com/schemas/dotmock-project.schema.json
+# Schema: https://dotmock.com/schemas/dotmock-project.schema.json (also works with
+# \`dotmock-server --local --config dotmock.yaml\` and the ghcr.io/dotmock/dotmock-server image).
 #
-# Point your SDK at http://localhost:8080/<subdomain>/v1 (OpenAI-compatible) or run
+# Point your SDK at http://127.0.0.1:8080/<subdomain>/v1 (OpenAI-compatible) or run
 # \`dotmock llm connect <subdomain> --local\` for Anthropic/Gemini/LangChain snippets.
 #
 # Fixtures are evaluated by ascending priority; the first match wins.

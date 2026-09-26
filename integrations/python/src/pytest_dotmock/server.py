@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -46,14 +47,37 @@ def _healthy(url: str) -> bool:
         return False
 
 
-def load_apis(config_path: Optional[Path]) -> List[Dict[str, Any]]:
+def _slugify(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")[:63].rstrip("-")
+
+
+def _resolve_api(obj: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    name = obj.get("name") or ""
+    subdomain = (obj.get("subdomain") or _slugify(name or obj.get("id") or "")).lower()
+    if not subdomain:
+        return None
+    kind = str(obj.get("type") or obj.get("kind") or ("llm" if "fixtures" in obj else "openapi")).lower()
+    return {"name": name or subdomain, "subdomain": subdomain, "type": "llm" if kind == "llm" else "openapi"}
+
+
+def load_apis(config_path: Optional[Path]) -> List[Dict[str, str]]:
+    """Mirror dotmock-server's loader: `apis:` list (with `file:` includes) or a single top-level API."""
     if not config_path or not config_path.exists():
         return []
     data = yaml.safe_load(config_path.read_text()) or {}
-    apis = data.get("apis")
-    if apis is None and data.get("type"):
-        apis = [data]
-    return [a for a in (apis or []) if isinstance(a, dict)]
+    entries = data["apis"] if isinstance(data.get("apis"), list) else [data]
+    out = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if isinstance(entry.get("file"), str):
+            include = (config_path.parent / entry["file"]).resolve()
+            base = yaml.safe_load(include.read_text()) if include.exists() else {}
+            entry = {**(base or {}), **{k: v for k, v in entry.items() if k != "file"}}
+        resolved = _resolve_api(entry)
+        if resolved:
+            out.append(resolved)
+    return out
 
 
 def available_runtime(image: str = DEFAULT_IMAGE, require_local_image: bool = False) -> Optional[str]:
@@ -102,6 +126,14 @@ class DotmockServer:
         if self.url:
             if not _healthy(self.url):
                 raise DotmockError(f"{self.url}{HEALTH_PATH} is not healthy")
+            try:
+                listed = _request("GET", f"{self.url}/__dotmock/apis") or {}
+                apis = listed.get("apis") if isinstance(listed, dict) else listed
+                discovered = [_resolve_api(a) for a in (apis or []) if isinstance(a, dict)]
+                if discovered:
+                    self.apis = [a for a in discovered if a]
+            except (urllib.error.URLError, OSError, ValueError):
+                pass
             return self
         if not self.config or not self.config.exists():
             raise DotmockError(f"DotMock config not found: {self.config} (run `dotmock init --llm`)")
@@ -115,7 +147,8 @@ class DotmockServer:
             if not binary:
                 raise DotmockError("dotmock-server binary not found on PATH")
             env = {**os.environ, "DOTMOCK_LOCAL_MODE": "true", "DOTMOCK_LOCAL_CONFIG": str(self.config), "PORT": str(self.port)}
-            self._proc = subprocess.Popen([binary], env=env, cwd=self.config.parent, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            args = [binary, "--local", "--config", str(self.config), "--port", str(self.port)]
+            self._proc = subprocess.Popen(args, env=env, cwd=self.config.parent, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         else:
             docker = shutil.which("docker")
             if not docker:
@@ -127,9 +160,9 @@ class DotmockServer:
                     docker, "run", "-d", "--name", self._container,
                     "-p", f"127.0.0.1:{self.port}:8080",
                     "--add-host", "host.docker.internal:host-gateway",
-                    "-v", f"{self.config.parent}:/dotmock:ro",
+                    "-v", f"{self.config.parent}:/config:ro",
                     "-e", "DOTMOCK_LOCAL_MODE=true",
-                    "-e", f"DOTMOCK_LOCAL_CONFIG=/dotmock/{self.config.name}",
+                    "-e", f"DOTMOCK_LOCAL_CONFIG=/config/{self.config.name}",
                     "-e", "PORT=8080",
                     self.image,
                 ],
@@ -212,8 +245,8 @@ class DotmockServer:
         _request("POST", f"{self.url}/__dotmock/reset{query}", params)
 
     def journal(self, api: Optional[str] = None, session: Optional[str] = None, fixture: Optional[str] = None) -> List[Dict[str, Any]]:
-        query = f"?{urllib.parse.urlencode({'api': api})}" if api else ""
-        payload = _request("GET", f"{self.url}/__dotmock/journal{query}")
+        params = {k: v for k, v in {"api": api, "session": session, "limit": 1000}.items() if v}
+        payload = _request("GET", f"{self.url}/__dotmock/journal?{urllib.parse.urlencode(params)}")
         if isinstance(payload, dict):
             payload = payload.get("entries") or payload.get("journal") or payload.get("data") or []
         entries = [e for e in (payload or []) if isinstance(e, dict)]

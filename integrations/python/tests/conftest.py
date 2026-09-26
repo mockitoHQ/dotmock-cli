@@ -34,7 +34,10 @@ def make_handler(state):
                 return self._send(200, {"status": "ok"})
             if url.path == "/__dotmock/journal":
                 api = parse_qs(url.query).get("api", [None])[0]
-                return self._send(200, [e for e in reversed(state.journal) if not api or e["api"] == api])
+                entries = [e for e in reversed(state.journal) if not api or e["api"] == api]
+                return self._send(200, {"entries": entries, "count": len(entries)})
+            if url.path == "/__dotmock/apis":
+                return self._send(200, {"apis": [{"id": "local-chat", "name": "Chat", "subdomain": "chat", "type": "llm"}]})
             self._send(404, {})
 
         def do_POST(self):

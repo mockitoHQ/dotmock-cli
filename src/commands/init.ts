@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { Command } from "commander";
-import { PROJECT_SCHEMA_VERSION, renderProjectYaml, starterLlmProject, type ProjectConfig } from "../lib/project-config.js";
+import { PROJECT_FORMAT_VERSION, renderProjectYaml, resolveApis, starterLlmProject, type ProjectConfig } from "../lib/project-config.js";
 import { error, info, isJsonMode, json, success } from "../output.js";
 
 export const initCommand = new Command("init")
@@ -19,13 +19,13 @@ export const initCommand = new Command("init")
       const wantLlm = opts.llm || !opts.openapi;
       const config: ProjectConfig = wantLlm
         ? starterLlmProject(opts.name, opts.subdomain)
-        : { schemaVersion: PROJECT_SCHEMA_VERSION, apis: [] };
+        : { version: PROJECT_FORMAT_VERSION, apis: [] };
       if (opts.openapi) {
         const subdomain = wantLlm ? "api" : opts.subdomain;
         config.apis.push({ name: wantLlm ? "REST API" : opts.name, subdomain, type: "openapi", spec: opts.openapi });
       }
       writeFileSync(path, renderProjectYaml(config));
-      if (isJsonMode()) { json({ file: path, apis: config.apis.map((api) => ({ name: api.name, subdomain: api.subdomain, type: api.type })) }); return; }
+      if (isJsonMode()) { json({ file: path, apis: resolveApis(config, dirname(path)) }); return; }
       success(`Created ${path}`);
       info("Start it with: dotmock serve --config " + opts.output);
       if (wantLlm) info(`Then: export OPENAI_BASE_URL=http://127.0.0.1:8080/${opts.subdomain}/v1`);

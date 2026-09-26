@@ -1,7 +1,8 @@
 # DotMock local project — served by `dotmock serve` (no account needed).
-# Schema: https://dotmock.com/schemas/dotmock-project.schema.json
+# Schema: https://dotmock.com/schemas/dotmock-project.schema.json (also works with
+# `dotmock-server --local --config dotmock.yaml` and the ghcr.io/dotmock/dotmock-server image).
 #
-# Point your SDK at http://localhost:8080/<subdomain>/v1 (OpenAI-compatible) or run
+# Point your SDK at http://127.0.0.1:8080/<subdomain>/v1 (OpenAI-compatible) or run
 # `dotmock llm connect <subdomain> --local` for Anthropic/Gemini/LangChain snippets.
 #
 # Fixtures are evaluated by ascending priority; the first match wins.
@@ -11,7 +12,7 @@
 #   chaos: {dropRate, malformedRate, disconnectRate, rateLimitRate} for probabilistic failures
 #   Send X-Dotmock-Seed: <int> to make chaos and template randomness reproducible.
 
-schemaVersion: dotmock/project-v1
+version: 1
 apis:
   - name: Assistant
     subdomain: assistant

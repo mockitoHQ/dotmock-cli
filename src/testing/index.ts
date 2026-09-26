@@ -28,6 +28,7 @@ import {
   loadProjectConfig,
   normalizeProjectConfig,
   type ProjectConfig,
+  type ResolvedApi,
 } from "../lib/project-config.js";
 import { apiUrls, freePort, isHealthy, sdkEnv, startServer, type ApiUrl, type RuntimePreference } from "../lib/serve.js";
 
@@ -63,15 +64,15 @@ export interface DotmockInstance {
 let current: DotmockInstance | null = null;
 const previousEnv: Record<string, string | undefined> = {};
 
-function instanceFor(url: string, config: ProjectConfig | null, stop: () => Promise<void>, external: boolean): DotmockInstance {
-  const apis = config ? apiUrls(config, url) : [];
+function instanceFor(url: string, resolved: ResolvedApi[], stop: () => Promise<void>, external: boolean): DotmockInstance {
+  const apis = apiUrls(resolved, url);
   const find = (api?: string, llm = false): ApiUrl | undefined =>
     api ? apis.find((a) => a.subdomain === api || a.name === api) : apis.find((a) => !llm || a.type === "llm");
   return {
     url,
     apis,
     external,
-    env: config ? sdkEnv(config, url) : { DOTMOCK_URL: url },
+    env: sdkEnv(resolved, url),
     baseUrl(api) {
       const hit = find(api);
       if (hit) return hit.baseUrl;
@@ -111,6 +112,31 @@ function restoreEnv(): void {
   }
 }
 
+/** Ask a running server which APIs it serves (GET /__dotmock/apis); falls back to the local config file. */
+async function discoverApis(url: string): Promise<ResolvedApi[]> {
+  try {
+    const response = await fetch(`${url}/__dotmock/apis`, { signal: AbortSignal.timeout(2000) });
+    if (response.ok) {
+      const body = (await response.json()) as { apis?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>;
+      const list = Array.isArray(body) ? body : body.apis ?? [];
+      return list
+        .filter((api) => typeof api.subdomain === "string")
+        .map((api) => ({
+          name: String(api.name ?? api.subdomain),
+          subdomain: String(api.subdomain),
+          type: String(api.type) === "llm" ? "llm" : "openapi",
+        }));
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    return loadProjectConfig(process.env.DOTMOCK_CONFIG ?? "dotmock.yaml").apis;
+  } catch {
+    return [];
+  }
+}
+
 /** Start (or attach to) a local DotMock server. Idempotent: returns the running instance. */
 export async function startDotmock(options: StartDotmockOptions = {}): Promise<DotmockInstance> {
   if (current) return current;
@@ -121,14 +147,7 @@ export async function startDotmock(options: StartDotmockOptions = {}): Promise<D
     if (!(await isHealthy(externalUrl))) {
       throw new Error(`DOTMOCK_URL=${externalUrl} is set but ${externalUrl}/__dotmock/health is not healthy.`);
     }
-    let config: ProjectConfig | null = null;
-    try {
-      const loaded = loadProjectConfig(process.env.DOTMOCK_CONFIG ?? "dotmock.yaml");
-      config = loaded.config;
-    } catch {
-      // Attaching without a readable config: URLs fall back to `${url}/${api}`.
-    }
-    current = instanceFor(externalUrl, config, async () => { current = null; }, true);
+    current = instanceFor(externalUrl, await discoverApis(externalUrl), async () => { current = null; }, true);
     return current;
   }
 
@@ -145,7 +164,7 @@ export async function startDotmock(options: StartDotmockOptions = {}): Promise<D
       timeoutMs: options.timeoutMs ?? 60_000,
       name: `dotmock-test-${port}`,
     });
-    const instance = instanceFor(server.state.baseUrl, loaded.config, async () => {
+    const instance = instanceFor(server.state.baseUrl, loaded.apis, async () => {
       await server.stop();
       cleanup();
       if (setEnv) restoreEnv();
@@ -187,7 +206,7 @@ export async function resetDotmock(options: RuntimeOptions = {}): Promise<void> 
 
 /** Read the request journal, oldest first. */
 export async function getJournal(options: RuntimeOptions & { fixture?: string } = {}): Promise<JournalEntry[]> {
-  const entries = await fetchLocalJournal(serverUrl(options.url), options.api);
+  const entries = await fetchLocalJournal(serverUrl(options.url), options.api, { session: options.session, limit: 1000 });
   return filterJournal(entries, { session: options.session, fixture: options.fixture }).sort(
     (a, b) => Number(a.timestamp ?? 0) - Number(b.timestamp ?? 0),
   );

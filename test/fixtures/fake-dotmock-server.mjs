@@ -16,14 +16,19 @@ createServer(async (req, res) => {
   if (url.pathname === "/__dotmock/health") return send(200, { status: "ok", mode: "local" });
   if (url.pathname === "/__dotmock/journal") {
     const api = url.searchParams.get("api");
-    return send(200, journal.filter((e) => !api || e.api === api).slice().reverse());
+    const session = url.searchParams.get("session");
+    const entries = journal.filter((e) => (!api || e.api === api) && (!session || e.session === session)).slice().reverse();
+    return send(200, { entries, count: entries.length });
   }
   if (url.pathname === "/__dotmock/reset" && req.method === "POST") {
-    resets.push(Object.fromEntries(url.searchParams));
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    resets.push(JSON.parse(raw || "{}"));
     journal = [];
     return send(200, { reset: true });
   }
   if (url.pathname === "/__test/resets") return send(200, resets);
+  if (url.pathname === "/__dotmock/apis") return send(200, { apis: [{ id: "local-chat", name: "Chat", subdomain: "chat", type: "llm" }] });
   const match = url.pathname.match(/^\/([a-z0-9-]+)\/v1\/chat\/completions$/);
   if (match && req.method === "POST") {
     let raw = "";

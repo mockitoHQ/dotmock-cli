@@ -81,9 +81,15 @@ async function expectOk(response: Response, what: string): Promise<unknown> {
   }
 }
 
-export async function fetchLocalJournal(baseUrl: string, api?: string): Promise<JournalEntry[]> {
+export async function fetchLocalJournal(
+  baseUrl: string,
+  api?: string,
+  options: { session?: string; limit?: number } = {},
+): Promise<JournalEntry[]> {
   const url = new URL(`${trimBase(baseUrl)}/__dotmock/journal`);
   if (api) url.searchParams.set("api", api);
+  if (options.session) url.searchParams.set("session", options.session);
+  if (options.limit) url.searchParams.set("limit", String(options.limit));
   return normalizeJournal(await expectOk(await fetch(url), "GET /__dotmock/journal"));
 }
 
