@@ -16,46 +16,41 @@ dotmock --version
 
 Or run without installing: `npx @dotmock/cli <command>`.
 
-## Local mode (no account)
+## Quick start: LLM mocks
 
-Run LLM and REST mocks locally from a `dotmock.yaml` project file:
+DotMock is a hosted service: mocks run at `https://<subdomain>-<team>.mock.rest`
+and are managed with your DotMock account or API key.
 
 ```sh
-dotmock init --llm              # greeting, tool-call round trip, structured output, refusal, rate limit
-dotmock serve                   # dotmock-server on PATH, else docker ghcr.io/mockitohq/dotmock-server
-export OPENAI_BASE_URL=http://127.0.0.1:8080/assistant/v1
+dotmock init --llm              # dotmock.yaml: greeting, tool-call round trip, structured output, refusal, rate limit
+dotmock login                   # or: export DOTMOCK_API_KEY=mck_...
+dotmock config apply            # creates the LLM API on first run, then syncs fixtures + settings
+dotmock llm connect assistant   # base URL, env vars, and SDK snippets
 ```
 
-`dotmock serve [--config dotmock.yaml] [--port 8080] [--detach]` waits for
-`/__dotmock/health`, prints each API's base URL, and hot-reloads edits to the
-file. With `--detach` it returns once healthy; stop it with
-`dotmock serve stop --port 8080` (`dotmock serve status` checks it).
-
-Project file format (JSON Schema: `schemas/dotmock-project.schema.json`):
+`dotmock.yaml` is a `dotmock/v2` definition with `kind: llm`:
 
 ```yaml
-version: 1
-apis:
-  - name: Assistant
-    subdomain: assistant        # X-Dotmock-Api header or /assistant/... prefix (default: slug of name)
-    type: llm                   # llm | openapi (inferred from fixtures/spec when omitted)
-    settings: { fallback: { type: none } }
-    fixtures:
-      - id: greeting
-        name: greeting
-        priority: 10
-        match: { userMessage: "/\\b(hi|hello)\\b/" }
-        response: { content: "Hello!", finishReason: stop }
-  - name: Orders
-    subdomain: orders
-    type: openapi
-    spec: ./openapi.yaml        # or an inline OpenAPI object
-  - file: ./checkout.yaml       # include a `dotmock config pull` (dotmock/v2) file
+schemaVersion: dotmock/v2
+kind: llm
+id: 0b6c1c9e-...                # written by the first `config apply`
+name: Assistant
+subdomain: assistant
+protocol:
+  source: llm
+  settings: { fallback: { type: none } }
+rules: []
+fixtures:
+  - name: greeting
+    priority: 10
+    match: { userMessage: "/\\b(hi|hello)\\b/" }
+    response: { content: "Hello!", finishReason: stop }
 ```
 
-Fixtures and settings use the same shapes as cloud LLM fixtures, so they can be
-moved between a project file and DotMock unchanged. The same file runs directly
-with `dotmock-server --local --config dotmock.yaml`.
+`config apply` matches fixtures by name: new ones are created, existing ones
+updated, and hosted fixtures missing from the file are kept unless you pass
+`--prune`. `config plan` previews the changes. LLM fixtures are live as soon as
+they are applied.
 
 ## LLM workflows
 
@@ -69,39 +64,47 @@ dotmock llm recordings <api>                 # recorded upstream calls
 dotmock llm promote <api> <index>            # turn a recording into a fixture
 ```
 
-Add `--local` to `connect`, `journal`, and `reset` to target `dotmock serve`
-(`$DOTMOCK_URL`, default `http://127.0.0.1:8080`) with the API's subdomain.
+`<api>` is an API id, subdomain, or name. Send `X-Dotmock-Session: <id>` with
+requests to isolate sequence counters and journal entries per test run.
 
 ## Tests
 
 ```ts
-import { startDotmock, stopDotmock, resetDotmock, getJournal, expectFixtureMatched } from "@dotmock/cli/testing";
+import { connectDotmock, disconnectDotmock, resetDotmock, expectFixtureMatched } from "@dotmock/cli/testing";
 
-beforeAll(() => startDotmock({ config: "dotmock.yaml" })); // also exports OPENAI_BASE_URL etc.
-afterAll(() => stopDotmock());
+let dotmock;
+beforeAll(async () => { dotmock = await connectDotmock({ api: "assistant" }); }); // exports OPENAI_BASE_URL etc.
+afterAll(() => disconnectDotmock());
 beforeEach(() => resetDotmock());
 
 it("greets", async () => {
-  // ... call your code that uses the OpenAI/Anthropic SDK ...
+  // new OpenAI({ baseURL: dotmock.openaiBaseUrl, apiKey: "dotmock", defaultHeaders: dotmock.headers })
   await expectFixtureMatched("greeting", { times: 1 });
 });
 ```
 
-`@dotmock/cli/testing` is ESM and works with vitest, jest (ESM mode), and
-`node:test`. When `DOTMOCK_URL` is set, `startDotmock()` attaches to that
-server. See `examples/vitest/`. For Python, see `integrations/python/`
-(`pytest-dotmock`).
+`connectDotmock({ api, apiKey, session })` defaults to `DOTMOCK_API`,
+`DOTMOCK_API_KEY` (or the key saved by `dotmock login`) and `DOTMOCK_SESSION`
+(else a random session). It returns `baseUrl`, `openaiBaseUrl`,
+`anthropicBaseUrl`, `headers` (`X-Dotmock-Session`) and `env`. `resetDotmock()`,
+`getJournal()` and `expectFixtureMatched()` call the hosted API for that session
+and only see requests made since the last reset. The module is ESM and works
+with vitest, jest (ESM mode), and `node:test`. See `examples/vitest/`. For
+Python, see `integrations/python/` (`pytest-dotmock`).
 
 ## GitHub Actions
 
 ```yaml
 - uses: mockitoHQ/dotmock-cli/action@v1
   with:
-    config: dotmock.yaml
-- run: npm test    # OPENAI_BASE_URL, ANTHROPIC_BASE_URL, DOTMOCK_URL are exported
+    api-key: ${{ secrets.DOTMOCK_API_KEY }}
+    config: dotmock.yaml   # optional: apply before the tests
+    # api: assistant       # id or subdomain; optional with config
+- run: npm test            # OPENAI_BASE_URL, ANTHROPIC_BASE_URL, DOTMOCK_URL, DOTMOCK_SESSION are exported
 ```
 
-The server stops in the action's post step. Details: `action/README.md`.
+Each run gets its own session (`<run_id>-<run_attempt>` by default), and the
+post step summarizes that session's journal. Details: `action/README.md`.
 
 ## Cloud workflows
 

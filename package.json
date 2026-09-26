@@ -1,11 +1,10 @@
 {
   "name": "@dotmock/cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "CLI for DotMock — create, manage, and use mock APIs",
   "keywords": [
     "dotmock",
     "api-mocking",
-    "mock-server",
     "cli",
     "testing",
     "llm",
@@ -58,7 +57,7 @@
   },
   "files": [
     "dist",
-    "schemas"
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=18"
