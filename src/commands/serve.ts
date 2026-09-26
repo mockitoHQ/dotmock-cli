@@ -49,7 +49,7 @@ export const serveCommand = new Command("serve")
   .option("-p, --port <port>", "Port to listen on", parsePort, 8080)
   .option("-d, --detach", "Run in the background and return once healthy")
   .option("--runtime <runtime>", "auto (dotmock-server on PATH, else docker), binary, or docker", "auto")
-  .option("--image <image>", "Docker image (default $DOTMOCK_SERVER_IMAGE or ghcr.io/dotmock/dotmock-server:latest)")
+  .option("--image <image>", "Docker image (default $DOTMOCK_SERVER_IMAGE or ghcr.io/mockitohq/dotmock-server:latest)")
   .option("--timeout <seconds>", "Health-check timeout", parseSeconds, 60)
   .action(async (action: string | undefined, opts) => {
     try {

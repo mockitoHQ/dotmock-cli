@@ -9,7 +9,7 @@ import type { ResolvedApi } from "./project-config.js";
 const execFileAsync = promisify(execFile);
 
 /** Contract C6: image and local-mode environment. */
-export const DEFAULT_SERVER_IMAGE = "ghcr.io/dotmock/dotmock-server:latest";
+export const DEFAULT_SERVER_IMAGE = "ghcr.io/mockitohq/dotmock-server:latest";
 export const SERVER_BINARY = "dotmock-server";
 export const CONTAINER_CONFIG_DIR = "/config";
 export const HEALTH_PATH = "/__dotmock/health";

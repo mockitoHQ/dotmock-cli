@@ -1,7 +1,7 @@
 {
   "name": "@dotmock/cli",
   "version": "0.2.0",
-  "description": "CLI for DotMock \u2014 create, manage, and use mock APIs",
+  "description": "CLI for DotMock — create, manage, and use mock APIs",
   "keywords": [
     "dotmock",
     "api-mocking",
@@ -14,6 +14,10 @@
     "vitest"
   ],
   "homepage": "https://dotmock.com/docs/guides/cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mockitoHQ/dotmock-cli.git"
+  },
   "bugs": {
     "url": "https://dotmock.com/contact"
   },

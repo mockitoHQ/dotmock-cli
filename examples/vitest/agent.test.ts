@@ -1,5 +1,5 @@
 // Example: test LLM-calling code against a local DotMock server.
-// Runs `dotmock-server` from PATH, or the ghcr.io/dotmock/dotmock-server image via Docker.
+// Runs `dotmock-server` from PATH, or the ghcr.io/mockitohq/dotmock-server image via Docker.
 // In CI with the dotmock GitHub Action, DOTMOCK_URL is already set and startDotmock() attaches to it.
 import OpenAI from "openai";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";

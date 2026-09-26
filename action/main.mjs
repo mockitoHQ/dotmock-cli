@@ -6,7 +6,7 @@ try {
   const workdir = resolve(process.env.GITHUB_WORKSPACE ?? process.cwd(), input("working-directory", "."));
   const config = resolve(workdir, input("config", "dotmock.yaml"));
   const port = input("port", "8080");
-  const image = input("image", "ghcr.io/dotmock/dotmock-server:latest");
+  const image = input("image", "ghcr.io/mockitohq/dotmock-server:latest");
   const runtime = input("runtime", "auto");
   const stateDir = join(process.env.RUNNER_TEMP ?? workdir, "dotmock-serve");
   mkdirSync(stateDir, { recursive: true });

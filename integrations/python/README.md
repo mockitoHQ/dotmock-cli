@@ -10,7 +10,7 @@ npx @dotmock/cli init --llm      # or: npm i -g @dotmock/cli && dotmock init --l
 ```
 
 The server runs from a `dotmock-server` binary on `PATH`, otherwise from the
-`ghcr.io/dotmock/dotmock-server` Docker image. If `DOTMOCK_URL` is set (for
+`ghcr.io/mockitohq/dotmock-server` Docker image. If `DOTMOCK_URL` is set (for
 example by the DotMock GitHub Action) the plugin attaches to that server instead.
 
 ```python
@@ -43,7 +43,7 @@ Handle methods: `base_url(api=None)`, `openai_base_url(api=None)`,
 | --- | --- | --- |
 | `--dotmock-config` | `dotmock_config` | `dotmock.yaml` (or `$DOTMOCK_CONFIG`) |
 | `--dotmock-port` | | free port |
-| `--dotmock-image` | `dotmock_image` | `ghcr.io/dotmock/dotmock-server:latest` |
+| `--dotmock-image` | `dotmock_image` | `ghcr.io/mockitohq/dotmock-server:latest` |
 | `--dotmock-runtime` | | `auto` (`binary`, `docker`) |
 
 ## Development

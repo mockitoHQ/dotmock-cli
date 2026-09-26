@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-DEFAULT_IMAGE = "ghcr.io/dotmock/dotmock-server:latest"
+DEFAULT_IMAGE = "ghcr.io/mockitohq/dotmock-server:latest"
 HEALTH_PATH = "/__dotmock/health"
 
 

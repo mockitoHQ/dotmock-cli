@@ -354,7 +354,7 @@ export function starterLlmProject(name = "Assistant", subdomain = "assistant"): 
 
 const STARTER_HEADER = `# DotMock local project — served by \`dotmock serve\` (no account needed).
 # Schema: https://dotmock.com/schemas/dotmock-project.schema.json (also works with
-# \`dotmock-server --local --config dotmock.yaml\` and the ghcr.io/dotmock/dotmock-server image).
+# \`dotmock-server --local --config dotmock.yaml\` and the ghcr.io/mockitohq/dotmock-server image).
 #
 # Point your SDK at http://127.0.0.1:8080/<subdomain>/v1 (OpenAI-compatible) or run
 # \`dotmock llm connect <subdomain> --local\` for Anthropic/Gemini/LangChain snippets.

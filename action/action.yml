@@ -16,7 +16,7 @@ inputs:
     default: "8080"
   image:
     description: dotmock-server Docker image.
-    default: ghcr.io/dotmock/dotmock-server:latest
+    default: ghcr.io/mockitohq/dotmock-server:latest
   runtime:
     description: auto (dotmock-server on PATH, else docker), binary, or docker.
     default: auto

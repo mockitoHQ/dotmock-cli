@@ -22,7 +22,7 @@ Run LLM and REST mocks locally from a `dotmock.yaml` project file:
 
 ```sh
 dotmock init --llm              # greeting, tool-call round trip, structured output, refusal, rate limit
-dotmock serve                   # dotmock-server on PATH, else docker ghcr.io/dotmock/dotmock-server
+dotmock serve                   # dotmock-server on PATH, else docker ghcr.io/mockitohq/dotmock-server
 export OPENAI_BASE_URL=http://127.0.0.1:8080/assistant/v1
 ```
 
@@ -95,7 +95,7 @@ server. See `examples/vitest/`. For Python, see `integrations/python/`
 ## GitHub Actions
 
 ```yaml
-- uses: dotmock/dotmock-cli/action@v1
+- uses: mockitoHQ/dotmock-cli/action@v1
   with:
     config: dotmock.yaml
 - run: npm test    # OPENAI_BASE_URL, ANTHROPIC_BASE_URL, DOTMOCK_URL are exported

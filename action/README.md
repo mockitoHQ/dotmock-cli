@@ -18,7 +18,7 @@ jobs:
 
       - name: Start DotMock
         id: dotmock
-        uses: dotmock/dotmock-cli/action@v1
+        uses: mockitoHQ/dotmock-cli/action@v1
         with:
           config: dotmock.yaml   # default
           port: "8080"           # default
@@ -33,7 +33,7 @@ jobs:
         run: dotmock llm journal assistant --local
 ```
 
-Inputs: `config`, `port`, `image` (default `ghcr.io/dotmock/dotmock-server:latest`), `runtime`
+Inputs: `config`, `port`, `image` (default `ghcr.io/mockitohq/dotmock-server:latest`), `runtime`
 (`auto` | `binary` | `docker`), `cli-version`, `timeout`, `working-directory`, `export-dummy-keys`.
 
 Outputs: `url`, `openai-base-url`, `anthropic-base-url`, `apis` (JSON), e.g.
