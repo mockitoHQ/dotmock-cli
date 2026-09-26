@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dotmock.com/schemas/dotmock-project.schema.json",
+  "title": "DotMock local project (dotmock.yaml)",
+  "description": "Read by `dotmock serve` and by dotmock-server in local mode (DOTMOCK_LOCAL_MODE=true, DOTMOCK_LOCAL_CONFIG=<file>). YAML or JSON. Fixture and settings objects use the same shapes as apiSpecifications.specification in the cloud (dotmock-server pkg/llm/types.go).",
+  "type": "object",
+  "required": ["apis"],
+  "properties": {
+    "schemaVersion": { "const": "dotmock/project-v1" },
+    "apis": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/api" }
+    }
+  },
+  "$defs": {
+    "api": {
+      "type": "object",
+      "required": ["name", "subdomain", "type"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "subdomain": {
+          "type": "string",
+          "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+          "description": "Selects this API via `X-Dotmock-Api: <subdomain>` or the `/<subdomain>/...` path prefix; the only API when just one is defined."
+        },
+        "type": { "enum": ["llm", "openapi"] },
+        "defaultModel": { "type": "string" },
+        "settings": { "$ref": "#/$defs/llmSettings" },
+        "fixtures": { "type": "array", "items": { "$ref": "#/$defs/fixture" } },
+        "spec": {
+          "description": "OpenAPI document inline, or a path relative to the project file.",
+          "oneOf": [{ "type": "string" }, { "type": "object" }]
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "openapi" } } }, "then": { "required": ["spec"] } }
+      ]
+    },
+    "llmSettings": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string" },
+        "chaos": { "$ref": "#/$defs/chaos" },
+        "fallback": {
+          "type": "object",
+          "properties": {
+            "type": { "enum": ["proxy", "record", "replay", "none"] },
+            "provider": { "type": "string" },
+            "upstream": { "type": "string" }
+          }
+        },
+        "vcrUpstreams": { "type": "object", "additionalProperties": { "type": "string" } },
+        "metricsEnabled": { "type": "boolean" }
+      }
+    },
+    "chaos": {
+      "type": "object",
+      "properties": {
+        "dropRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "malformedRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "disconnectRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "rateLimitRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "disconnectAfterChunks": { "type": "integer", "minimum": 0 },
+        "retryAfterSeconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "required": ["name"],
+      "description": "Omitted id defaults to a slug of name, priority to list order, enabled to true, protocol to http.",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "priority": { "type": "integer" },
+        "enabled": { "type": "boolean" },
+        "protocol": { "enum": ["http", "ws", "both"] },
+        "match": { "type": "object" },
+        "response": { "$ref": "#/$defs/response" },
+        "workflow": {
+          "type": "object",
+          "properties": {
+            "run": { "type": "object", "properties": { "toolCalls": { "type": "array", "items": { "$ref": "#/$defs/toolCall" } } } },
+            "response": { "$ref": "#/$defs/response" }
+          }
+        },
+        "streaming": { "type": "object" },
+        "latency": { "type": "object" },
+        "ws": { "type": "object" },
+        "chaos": { "$ref": "#/$defs/chaos" },
+        "stateActions": { "type": "object" }
+      },
+      "anyOf": [{ "required": ["response"] }, { "required": ["workflow"] }, { "required": ["ws"] }]
+    },
+    "toolCall": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "arguments": { "type": "string", "description": "JSON-encoded arguments." },
+        "result": { "type": "string", "description": "Mocked tool return value." }
+      }
+    },
+    "response": {
+      "type": "object",
+      "properties": {
+        "content": { "type": "string" },
+        "reasoning": { "type": "string" },
+        "toolCalls": { "type": "array", "items": { "$ref": "#/$defs/toolCall" } },
+        "finishReason": { "enum": ["stop", "tool_calls", "length", "content_filter"] },
+        "usage": { "type": "object" },
+        "error": {
+          "type": "object",
+          "properties": { "status": { "type": "integer" }, "message": { "type": "string" }, "type": { "type": "string" } }
+        },
+        "embedding": { "type": "array", "items": { "type": "number" } }
+      }
+    }
+  }
+}

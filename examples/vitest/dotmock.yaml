@@ -1,0 +1,92 @@
+# DotMock local project — served by `dotmock serve` (no account needed).
+# Schema: https://dotmock.com/schemas/dotmock-project.schema.json
+#
+# Point your SDK at http://localhost:8080/<subdomain>/v1 (OpenAI-compatible) or run
+# `dotmock llm connect <subdomain> --local` for Anthropic/Gemini/LangChain snippets.
+#
+# Fixtures are evaluated by ascending priority; the first match wins.
+#   match.userMessage: substring (case-insensitive) or /regex/ against the last user message
+#   match.toolName / model / systemPrompt / responseFormat / sequenceIndex / conditions: see docs
+#   response.error: {status, type, message} returns a provider-shaped error
+#   chaos: {dropRate, malformedRate, disconnectRate, rateLimitRate} for probabilistic failures
+#   Send X-Dotmock-Seed: <int> to make chaos and template randomness reproducible.
+
+schemaVersion: dotmock/project-v1
+apis:
+  - name: Assistant
+    subdomain: assistant
+    type: llm
+    defaultModel: gpt-4o-mini
+    settings:
+      chaos:
+        dropRate: 0
+        malformedRate: 0
+        disconnectRate: 0
+      fallback:
+        type: none
+    fixtures:
+      - id: greeting
+        name: greeting
+        priority: 10
+        enabled: true
+        match:
+          userMessage: /\b(hi|hello|hey)\b/
+        response:
+          content: Hello! I'm a DotMock LLM mock. How can I help you today?
+          finishReason: stop
+          usage:
+            promptTokens: 12
+            completionTokens: 14
+      - id: weather-tool-call
+        name: weather-tool-call
+        priority: 20
+        enabled: true
+        match:
+          toolName: get_weather
+        workflow:
+          run:
+            toolCalls:
+              - id: call_weather_1
+                name: get_weather
+                arguments: '{"city":"Paris","unit":"celsius"}'
+                result: '{"temperatureC":18,"condition":"sunny"}'
+          response:
+            content: It is currently {{tool.get_weather.result}} in {{tool.get_weather.args.city}}.
+            finishReason: stop
+      - id: structured-output
+        name: structured-output
+        priority: 30
+        enabled: true
+        match:
+          responseFormat: json_schema
+        response:
+          content: '{"sentiment":"positive","confidence":0.93,"topics":["shipping","support"]}'
+          finishReason: stop
+      - id: refusal
+        name: refusal
+        priority: 40
+        enabled: true
+        match:
+          userMessage: /(malware|exploit|steal)/
+        response:
+          content: I'm sorry, but I can't help with that request.
+          finishReason: stop
+      - id: rate-limit
+        name: rate-limit
+        priority: 50
+        enabled: true
+        match:
+          userMessage: /rate.?limit/
+        response:
+          error:
+            status: 429
+            type: rate_limit_error
+            message: Rate limit reached for requests. Please try again in 1s.
+      - id: fallback
+        name: fallback
+        priority: 1000
+        enabled: true
+        match: {}
+        response:
+          content: This is a DotMock mock response. Add a fixture in dotmock.yaml to customize it.
+          finishReason: stop
