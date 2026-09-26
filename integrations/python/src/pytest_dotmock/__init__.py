@@ -1,6 +1,6 @@
-"""pytest-dotmock: run DotMock locally in tests and assert which fixtures answered."""
+"""pytest-dotmock: point tests at a hosted DotMock LLM mock and assert which fixtures answered."""
 
-from .server import DEFAULT_IMAGE, DotmockError, DotmockServer
+from .client import DEFAULT_API_URL, SESSION_HEADER, Dotmock, DotmockError
 
-__all__ = ["DEFAULT_IMAGE", "DotmockError", "DotmockServer"]
-__version__ = "0.1.0"
+__all__ = ["DEFAULT_API_URL", "SESSION_HEADER", "Dotmock", "DotmockError"]
+__version__ = "0.2.0"

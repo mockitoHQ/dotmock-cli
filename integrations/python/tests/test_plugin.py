@@ -1,104 +1,95 @@
 import json
-import shutil
-import textwrap
+import os
+import time
 import urllib.request
-from pathlib import Path
 
 import pytest
 
-from pytest_dotmock import DotmockServer
-from pytest_dotmock.server import DEFAULT_IMAGE, available_runtime
+from pytest_dotmock import Dotmock, DotmockError
 
-CONFIG = textwrap.dedent(
-    """\
-    schemaVersion: dotmock/project-v1
-    apis:
-      - name: Chat
-        subdomain: chat
-        type: llm
-        fixtures:
-          - id: greeting
-            name: greeting
-            priority: 10
-            enabled: true
-            match: { userMessage: hello }
-            response: { content: "Hello from DotMock", finishReason: stop }
-          - id: fallback
-            name: fallback
-            priority: 1000
-            enabled: true
-            match: {}
-            response: { content: "fallback", finishReason: stop }
-    """
-)
+from conftest import API_ID
 
 
-def chat(base_url, text, session=None):
-    req = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps({"model": "gpt-4o-mini", "messages": [{"role": "user", "content": text}]}).encode(),
-        headers={"Content-Type": "application/json", **({"X-Dotmock-Session": session} if session else {})},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
+def test_client_resolves_hosted_urls_and_scopes_journal_to_session(fake_backend):
+    dm = Dotmock("assistant", api_key="mck_test", api_url=fake_backend.url, session="run-1").connect()
+    assert dm.api_id == API_ID
+    assert dm.openai_base_url() == "https://assistant-t1a2b3c4.mock.rest/v1"
+    assert dm.anthropic_base_url() == "https://assistant-t1a2b3c4.mock.rest"
+    assert dm.headers == {"X-Dotmock-Session": "run-1"}
+    assert dm.env()["DOTMOCK_SESSION"] == "run-1"
+
+    fake_backend.record("run-1", "greeting")
+    fake_backend.record("other", "greeting")
+    fake_backend.record("run-1", "rate-limit")
+    assert [e["id"] for e in dm.journal()] == ["1", "3"]
+    dm.assert_fixture_matched("greeting", times=1)
+    with pytest.raises(AssertionError, match=r'(?s)Expected fixture "refusal".*rate-limit'):
+        dm.assert_fixture_matched("refusal", timeout=0)
+
+    dm.reset()
+    assert fake_backend.calls[-2] == ("dotmock_reset_llm_sequences", {"apiId": API_ID, "session": "run-1"})
+    assert dm.journal() == []
+    assert len(dm.journal(all=True)) == 2
 
 
-def test_journal_reset_and_assertions_against_attached_server(fake_dotmock, tmp_path):
-    (tmp_path / "dotmock.yaml").write_text(CONFIG)
-    server = DotmockServer(config=tmp_path / "dotmock.yaml", url=fake_dotmock.url).start()
-    assert server.openai_base_url() == f"{fake_dotmock.url}/chat/v1"
-    assert server.env()["ANTHROPIC_BASE_URL"] == f"{fake_dotmock.url}/chat"
-
-    chat(server.openai_base_url(), "hello", session="s1")
-    chat(server.openai_base_url(), "something else")
-    server.assert_fixture_matched("greeting", times=1)
-    server.assert_fixture_matched("fallback", session="default")
-    assert [e["response"]["fixtureName"] for e in server.journal()] == ["greeting", "fallback"]
-    with pytest.raises(AssertionError, match=r'(?s)Expected fixture "refusal".*greeting'):
-        server.assert_fixture_matched("refusal")
-
-    server.reset(api="chat", session="s1")
-    assert fake_dotmock.resets[-1] == {"api": "chat", "session": "s1"}
-    assert server.journal() == []
+def test_client_requires_an_api_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("DOTMOCK_API_KEY", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with pytest.raises(DotmockError, match="DOTMOCK_API_KEY"):
+        Dotmock("assistant")
 
 
-def test_plugin_fixture_attaches_to_dotmock_url_and_resets_per_test(pytester, fake_dotmock, monkeypatch):
-    monkeypatch.setenv("DOTMOCK_URL", fake_dotmock.url)
-    pytester.makefile(".yaml", dotmock=CONFIG)
+def test_plugin_gives_each_test_its_own_session(pytester, fake_backend, monkeypatch):
+    monkeypatch.setenv("DOTMOCK_API_KEY", "mck_test")
+    monkeypatch.setenv("DOTMOCK_API", "assistant")
+    monkeypatch.setenv("DOTMOCK_API_URL", fake_backend.url)
+    monkeypatch.setenv("DOTMOCK_SESSION", "ci-7")
     pytester.makepyfile(
         """
-        import json, os, urllib.request
-
-        def _chat(url, text):
-            req = urllib.request.Request(url + "/chat/completions", method="POST",
-                data=json.dumps({"messages": [{"role": "user", "content": text}]}).encode(),
-                headers={"Content-Type": "application/json"})
-            urllib.request.urlopen(req).read()
+        import os
 
         def test_one(dotmock):
             assert os.environ["OPENAI_BASE_URL"] == dotmock.openai_base_url()
-            _chat(dotmock.openai_base_url(), "hello")
-            dotmock.assert_fixture_matched("greeting", times=1)
-
-        def test_two_starts_clean(dotmock):
+            assert os.environ["DOTMOCK_SESSION"] == dotmock.session
+            assert dotmock.session.startswith("ci-7-")
             assert dotmock.journal() == []
+
+        def test_two(dotmock, dotmock_api):
+            assert dotmock.session != dotmock_api.session
         """
     )
     result = pytester.runpytest()
     result.assert_outcomes(passed=2)
-    assert len(fake_dotmock.resets) == 2
+    resets = [params["session"] for action, params in fake_backend.calls if action == "dotmock_reset_llm_sequences"]
+    assert len(resets) == 2 and len(set(resets)) == 2
 
 
-_RUNTIME = available_runtime(DEFAULT_IMAGE, require_local_image=True)
+def test_plugin_skips_without_an_api_key(pytester, monkeypatch, tmp_path):
+    monkeypatch.delenv("DOTMOCK_API_KEY", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    pytester.makepyfile("def test_needs_dotmock(dotmock):\n    pass\n")
+    result = pytester.runpytest("-rs")
+    result.assert_outcomes(skipped=1)
+    result.stdout.fnmatch_lines(["*DOTMOCK_API_KEY is not set*"])
 
 
-@pytest.mark.skipif(_RUNTIME is None, reason="needs dotmock-server on PATH or the dotmock-server Docker image pulled locally")
-def test_real_server_end_to_end(tmp_path):
-    (tmp_path / "dotmock.yaml").write_text(CONFIG)
-    with DotmockServer(config=tmp_path / "dotmock.yaml", timeout=90) as server:
-        reply = chat(server.openai_base_url(), "hello there")
-        assert reply["choices"][0]["message"]["content"] == "Hello from DotMock"
-        server.assert_fixture_matched("greeting", times=1)
-        server.reset()
-        assert server.journal() == []
+@pytest.mark.skipif(
+    not (os.environ.get("DOTMOCK_API_KEY") and os.environ.get("DOTMOCK_API")),
+    reason="set DOTMOCK_API_KEY and DOTMOCK_API to run against the hosted service",
+)
+def test_hosted_end_to_end(dotmock):
+    req = urllib.request.Request(
+        dotmock.openai_base_url() + "/chat/completions",
+        data=json.dumps({"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hello"}]}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer dotmock", **dotmock.headers},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        assert resp.status == 200
+    entries = []
+    for _ in range(20):
+        entries = dotmock.journal()
+        if entries:
+            break
+        time.sleep(0.25)
+    assert entries, "the hosted journal should record the request for this session"

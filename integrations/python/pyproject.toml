@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pytest-dotmock"
-version = "0.1.0"
-description = "pytest plugin that runs a local DotMock server (LLM + REST mocks) and asserts on its request journal"
+version = "0.2.0"
+description = "pytest plugin for hosted DotMock LLM mocks: per-test sessions, sequence resets, and journal assertions"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "UNLICENSED" }
@@ -15,7 +15,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Topic :: Software Development :: Testing :: Mocking",
 ]
-dependencies = ["pytest>=7", "PyYAML>=6"]
+dependencies = ["pytest>=7"]
 
 [project.urls]
 Homepage = "https://dotmock.com/docs/guides/cli"

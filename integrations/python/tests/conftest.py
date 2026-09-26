@@ -1,18 +1,27 @@
 import json
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 pytest_plugins = ["pytester"]
 
+API_ID = "0b6c1c9e-5d4f-4f0e-9c1a-2b3c4d5e6f70"
 
-class FakeState:
+
+class FakeBackend:
+    """Stand-in for the DotMock API-key action endpoint (POST /agent/actions/execute)."""
+
     def __init__(self):
         self.journal = []
-        self.resets = []
+        self.calls = []
+
+    def record(self, session, fixture, path="/v1/chat/completions"):
+        """What the hosted mock does after answering a request."""
+        self.journal.append({
+            "id": str(len(self.journal) + 1), "timestamp": len(self.journal) + 1, "path": path,
+            "session": session, "response": {"status": 200, "fixtureName": fixture},
+        })
 
 
 def make_handler(state):
@@ -28,44 +37,31 @@ def make_handler(state):
             self.end_headers()
             self.wfile.write(raw)
 
-        def do_GET(self):
-            url = urlparse(self.path)
-            if url.path == "/__dotmock/health":
-                return self._send(200, {"status": "ok"})
-            if url.path == "/__dotmock/journal":
-                api = parse_qs(url.query).get("api", [None])[0]
-                entries = [e for e in reversed(state.journal) if not api or e["api"] == api]
-                return self._send(200, {"entries": entries, "count": len(entries)})
-            if url.path == "/__dotmock/apis":
-                return self._send(200, {"apis": [{"id": "local-chat", "name": "Chat", "subdomain": "chat", "type": "llm"}]})
-            self._send(404, {})
-
         def do_POST(self):
-            url = urlparse(self.path)
+            if self.path != "/agent/actions/execute" or self.headers.get("x-api-key") != "mck_test":
+                return self._send(401, {"message": "bad key"})
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
-            if url.path == "/__dotmock/reset":
-                state.resets.append(body)
-                state.journal.clear()
-                return self._send(200, {"reset": True})
-            parts = url.path.strip("/").split("/")
-            if parts[1:] == ["v1", "chat", "completions"]:
-                text = body["messages"][-1]["content"]
-                name = "greeting" if "hello" in text else "fallback"
-                state.journal.append({
-                    "id": str(len(state.journal)), "timestamp": time.time() * 1000, "api": parts[0],
-                    "path": url.path, "session": self.headers.get("X-Dotmock-Session") or "default",
-                    "response": {"status": 200, "fixtureName": name, "fixtureId": name},
-                })
-                return self._send(200, {"choices": [{"message": {"content": name}}]})
-            self._send(404, {})
+            action, params = body["action"], body["params"]
+            state.calls.append((action, params))
+            ok = lambda data: self._send(200, {"success": True, "data": data})  # noqa: E731
+            if action == "dotmock_list_apis":
+                return ok([{"id": API_ID, "name": "Assistant", "subdomain": "assistant"}])
+            if action == "dotmock_get_api":
+                return ok({"id": params["apiId"], "subdomain": "assistant", "fullUrl": "https://assistant-t1a2b3c4.mock.rest"})
+            if action == "dotmock_reset_llm_sequences":
+                return ok({"reset": True, "apiId": params["apiId"], "session": params.get("session")})
+            if action == "dotmock_get_llm_journal":
+                entries = [e for e in reversed(state.journal) if not params.get("session") or e["session"] == params["session"]]
+                return ok(entries)
+            self._send(400, {"message": f"unexpected action {action}"})
 
     return Handler
 
 
 @pytest.fixture
-def fake_dotmock():
-    state = FakeState()
+def fake_backend():
+    state = FakeBackend()
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
