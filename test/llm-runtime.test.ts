@@ -28,7 +28,7 @@ describe("llm helpers", () => {
   it("maps VCR flags to backend settings", () => {
     assert.deepEqual(buildVcrSettings(["OpenAI=https://api.openai.com/"], "record"), {
       vcrUpstreams: { openai: "https://api.openai.com" },
-      fallback: { type: "proxy" },
+      fallback: { type: "record" },
     });
     assert.deepEqual(buildVcrSettings([], "off"), { fallback: { type: "none" } });
     assert.throws(() => buildVcrSettings(["openai=http://api.openai.com"]), /https/);
@@ -119,7 +119,7 @@ describe("dotmock llm CLI against the backend", () => {
     assert.equal(requests[0].body.action, "dotmock_update_llm_runtime_settings");
     assert.deepEqual(requests[0].body.params.settings, {
       vcrUpstreams: { openai: "https://api.openai.com" },
-      fallback: { type: "proxy" },
+      fallback: { type: "record" },
     });
   });
 

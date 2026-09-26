@@ -186,7 +186,7 @@ const promoteCommand = new Command("promote")
 
 // ---------- vcr ----------
 
-export const VCR_MODES: Record<string, string> = { record: "proxy", replay: "replay", off: "none" };
+export const VCR_MODES: Record<string, string> = { record: "record", replay: "replay", off: "none" };
 
 export function buildVcrSettings(upstreams: string[], mode?: string): Record<string, unknown> {
   const settings: Record<string, unknown> = {};
