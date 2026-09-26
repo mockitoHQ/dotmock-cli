@@ -1,50 +1,56 @@
-name: DotMock local server
+name: DotMock LLM mocks
 description: >-
-  Start DotMock in local mode from your repo's dotmock.yaml (no account needed), export
-  OPENAI_BASE_URL / ANTHROPIC_BASE_URL / DOTMOCK_URL for later steps, and stop it after the job.
+  Point tests at a hosted DotMock LLM mock: optionally apply a dotmock.yaml definition, reset
+  sequence counters for a per-run session, and export OPENAI_BASE_URL / ANTHROPIC_BASE_URL /
+  DOTMOCK_URL / DOTMOCK_SESSION for later steps. The post step summarizes the session's journal.
 author: DotMock
 branding:
-  icon: server
+  icon: cloud
   color: purple
 
 inputs:
+  api-key:
+    description: DotMock API key (store it as a secret, e.g. secrets.DOTMOCK_API_KEY).
+    required: true
+  api:
+    description: API id or subdomain. Optional when `config` is set (the definition's id/subdomain is used).
+    default: ""
   config:
-    description: Path to the project file (relative to working-directory).
-    default: dotmock.yaml
-  port:
-    description: Host port for the server.
-    default: "8080"
-  image:
-    description: dotmock-server Docker image.
-    default: ghcr.io/mockitohq/dotmock-server:latest
-  runtime:
-    description: auto (dotmock-server on PATH, else docker), binary, or docker.
-    default: auto
+    description: Optional path to a dotmock.yaml definition to `dotmock config apply` first (relative to working-directory).
+    default: ""
+  session:
+    description: X-Dotmock-Session value isolating sequence counters and the journal for this run.
+    default: ${{ github.run_id }}-${{ github.run_attempt }}
   cli-version:
-    description: "@dotmock/cli version to install when `dotmock` is not already on PATH."
-    default: latest
-  timeout:
-    description: Seconds to wait for /__dotmock/health.
-    default: "60"
+    description: "@dotmock/cli version range to install."
+    default: ^0.3.0
+  api-url:
+    description: DotMock API base URL override (defaults to the hosted service).
+    default: ""
   working-directory:
-    description: Directory containing the project file.
+    description: Directory `config` is resolved against.
     default: .
   export-dummy-keys:
     description: Set OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY to "dotmock" when they are not already set, so SDK clients can be constructed.
     default: "true"
+  journal-summary:
+    description: Print the session's journal summary (and add it to the job summary) in the post step.
+    default: "true"
 
 outputs:
   url:
-    description: Server root, e.g. http://127.0.0.1:8080
+    description: Hosted mock root, e.g. https://assistant-t1a2b3c4.mock.rest
   openai-base-url:
-    description: OpenAI-compatible base URL of the first LLM API (…/<subdomain>/v1).
+    description: OpenAI-compatible base URL (<url>/v1).
   anthropic-base-url:
-    description: Anthropic base URL of the first LLM API (…/<subdomain>).
-  apis:
-    description: JSON array of {name, subdomain, type, baseUrl, openaiBaseUrl}.
+    description: Anthropic SDK base URL (<url>).
+  api-id:
+    description: Resolved API id.
+  session:
+    description: The X-Dotmock-Session used for this run.
 
 # A composite action cannot register a post step, so this is a dependency-free
-# Node action: main starts the server via `dotmock serve --detach`, post stops it.
+# Node action: main configures the hosted API, post reports the journal.
 runs:
   using: node24
   main: main.mjs

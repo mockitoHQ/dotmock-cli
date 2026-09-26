@@ -1,7 +1,10 @@
 # DotMock GitHub Action
 
-Runs `dotmock serve` against your repository's `dotmock.yaml` for the rest of the job
-(offline local mode, no DotMock account or API key needed) and stops it in the post step.
+Points a job at a hosted DotMock LLM mock. It installs `@dotmock/cli` (`^0.3.0`),
+authenticates with your API key, optionally applies a `dotmock.yaml` definition,
+resets sequence counters for a per-run session, and exports the mock's base URLs
+for every later step. The post step prints the session's journal summary (which
+fixture answered each request) and adds it to the job summary.
 
 ```yaml
 name: test
@@ -16,32 +19,45 @@ jobs:
         with:
           node-version: 22
 
-      - name: Start DotMock
+      - name: DotMock
         id: dotmock
         uses: mockitoHQ/dotmock-cli/action@v1
         with:
-          config: dotmock.yaml   # default
-          port: "8080"           # default
+          api-key: ${{ secrets.DOTMOCK_API_KEY }}
+          config: dotmock.yaml      # optional: `dotmock config apply` first
+          # api: assistant          # id or subdomain; optional when config is set
+          # session defaults to ${{ github.run_id }}-${{ github.run_attempt }}
 
       - run: npm ci
-      # OPENAI_BASE_URL, ANTHROPIC_BASE_URL and DOTMOCK_URL are exported for every later step,
-      # and @dotmock/cli/testing's startDotmock() attaches to DOTMOCK_URL automatically.
+      # Send `X-Dotmock-Session: $DOTMOCK_SESSION` with each request (e.g. the
+      # OpenAI SDK's defaultHeaders) so parallel runs do not share sequence counters.
       - run: npm test
-
-      - name: Show which fixtures answered
-        if: always()
-        run: dotmock llm journal assistant --local
 ```
 
-Inputs: `config`, `port`, `image` (default `ghcr.io/mockitohq/dotmock-server:latest`), `runtime`
-(`auto` | `binary` | `docker`), `cli-version`, `timeout`, `working-directory`, `export-dummy-keys`.
+## Inputs
 
-Outputs: `url`, `openai-base-url`, `anthropic-base-url`, `apis` (JSON), e.g.
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `api-key` | yes | | DotMock API key, from a secret. It is masked in logs. |
+| `api` | when no `config` | | API id or subdomain. |
+| `config` | no | | Definition to apply with `dotmock config apply` before the tests. |
+| `session` | no | `${{ github.run_id }}-${{ github.run_attempt }}` | `X-Dotmock-Session` isolating this run's sequence counters and journal. |
+| `cli-version` | no | `^0.3.0` | `@dotmock/cli` version range. |
+| `api-url` | no | hosted service | DotMock API base URL override. |
+| `working-directory` | no | `.` | Directory `config` is resolved against. |
+| `export-dummy-keys` | no | `true` | Set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` to `dotmock` when unset. |
+| `journal-summary` | no | `true` | Report the session's journal in the post step. |
+
+## Outputs and environment
+
+Outputs: `url`, `openai-base-url`, `anthropic-base-url`, `api-id`, `session`, e.g.
 `${{ steps.dotmock.outputs.openai-base-url }}`.
 
-Environment exported to later steps: `DOTMOCK_URL`, `DOTMOCK_LLM_URL`, `OPENAI_BASE_URL`,
-`ANTHROPIC_BASE_URL`, `DOTMOCK_CONFIG`, `DOTMOCK_STATE_DIR`, and (unless already set)
-`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` = `dotmock`.
+Exported to later steps: `DOTMOCK_URL`, `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`,
+`GOOGLE_GEMINI_BASE_URL`, `DOTMOCK_SESSION`, `DOTMOCK_API` (the API id), and
+`DOTMOCK_API_KEY` (masked), so `dotmock llm journal "$DOTMOCK_API" --session "$DOTMOCK_SESSION"`
+and `connectDotmock()` from `@dotmock/cli/testing` work without arguments. The
+installed `dotmock` binary is added to `PATH`.
 
-This is a JavaScript action rather than a composite one because composite actions cannot
-register the post step that stops the server.
+This is a dependency-free JavaScript action rather than a composite one because
+composite actions cannot register a post step.
