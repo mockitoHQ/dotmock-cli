@@ -1,0 +1,52 @@
+name: DotMock local server
+description: >-
+  Start DotMock in local mode from your repo's dotmock.yaml (no account needed), export
+  OPENAI_BASE_URL / ANTHROPIC_BASE_URL / DOTMOCK_URL for later steps, and stop it after the job.
+author: DotMock
+branding:
+  icon: server
+  color: purple
+
+inputs:
+  config:
+    description: Path to the project file (relative to working-directory).
+    default: dotmock.yaml
+  port:
+    description: Host port for the server.
+    default: "8080"
+  image:
+    description: dotmock-server Docker image.
+    default: ghcr.io/dotmock/dotmock-server:latest
+  runtime:
+    description: auto (dotmock-server on PATH, else docker), binary, or docker.
+    default: auto
+  cli-version:
+    description: "@dotmock/cli version to install when `dotmock` is not already on PATH."
+    default: latest
+  timeout:
+    description: Seconds to wait for /__dotmock/health.
+    default: "60"
+  working-directory:
+    description: Directory containing the project file.
+    default: .
+  export-dummy-keys:
+    description: Set OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY to "dotmock" when they are not already set, so SDK clients can be constructed.
+    default: "true"
+
+outputs:
+  url:
+    description: Server root, e.g. http://127.0.0.1:8080
+  openai-base-url:
+    description: OpenAI-compatible base URL of the first LLM API (…/<subdomain>/v1).
+  anthropic-base-url:
+    description: Anthropic base URL of the first LLM API (…/<subdomain>).
+  apis:
+    description: JSON array of {name, subdomain, type, baseUrl, openaiBaseUrl}.
+
+# A composite action cannot register a post step, so this is a dependency-free
+# Node action: main starts the server via `dotmock serve --detach`, post stops it.
+runs:
+  using: node24
+  main: main.mjs
+  post: post.mjs
+  post-if: always()
