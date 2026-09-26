@@ -76,6 +76,6 @@ describe("CLI lifecycle contract", () => {
       { encoding: "utf8" },
     ).trim();
 
-    assert.equal(version, "0.2.0");
+    assert.equal(version, "0.3.0");
   });
 });

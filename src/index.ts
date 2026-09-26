@@ -25,7 +25,6 @@ import { realtimeCommand } from "./commands/realtime.js";
 import { mockCommand } from "./commands/mock.js";
 import { capturesCommand } from "./commands/captures.js";
 import { llmCommand } from "./commands/llm.js";
-import { serveCommand } from "./commands/serve.js";
 import { initCommand } from "./commands/init.js";
 
 const program = new Command();
@@ -33,7 +32,7 @@ const program = new Command();
 program
   .name("dotmock")
   .description("CLI for DotMock — create, manage, and use mock APIs")
-  .version("0.2.0")
+  .version("0.3.0")
   .option("--json", "Emit machine-readable JSON for coding agents and CI");
 
 program.addCommand(loginCommand);
@@ -62,7 +61,6 @@ program.addCommand(realtimeCommand);
 program.addCommand(mockCommand);
 program.addCommand(capturesCommand);
 program.addCommand(llmCommand);
-program.addCommand(serveCommand);
 program.addCommand(initCommand);
 
 program.parseAsync().catch((cause) => {

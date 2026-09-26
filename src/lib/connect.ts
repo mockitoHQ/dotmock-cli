@@ -1,6 +1,7 @@
 /** SDK wiring for `dotmock llm connect`: base URLs, env vars, and copy-paste snippets. */
 
 export interface ConnectInfo {
+  /** Hosted mock root, e.g. https://assistant-t1a2b3c4.mock.rest */
   baseUrl: string;
   openaiBaseUrl: string;
   env: Record<string, string>;
@@ -19,7 +20,7 @@ export const CONNECT_SNIPPET_KEYS = [
   "curl",
 ] as const;
 
-export function buildConnectInfo(baseUrl: string, model = "gpt-4o-mini"): ConnectInfo {
+export function buildConnectInfo(baseUrl: string, model = "gpt-4o-mini", session?: string): ConnectInfo {
   const base = baseUrl.replace(/\/+$/, "");
   const v1 = `${base}/v1`;
   const env: Record<string, string> = {
@@ -30,6 +31,7 @@ export function buildConnectInfo(baseUrl: string, model = "gpt-4o-mini"): Connec
     ANTHROPIC_API_KEY: "dotmock",
     GOOGLE_GEMINI_BASE_URL: base,
     GEMINI_API_KEY: "dotmock",
+    ...(session ? { DOTMOCK_SESSION: session } : {}),
   };
 
   const snippets: Record<string, string> = {
@@ -100,7 +102,7 @@ const llm = new ChatOpenAI({
 console.log((await llm.invoke("hello")).content);`,
     curl: `curl ${v1}/chat/completions \\
   -H "Content-Type: application/json" \\
-  -H "X-Dotmock-Session: demo" \\
+  -H "X-Dotmock-Session: ${session ?? "demo"}" \\
   -d '{"model":"${model}","messages":[{"role":"user","content":"hello"}]}'`,
   };
 

@@ -6,6 +6,14 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { api, ApiError } from "../client.js";
 import { error, info, isJsonMode, json, success, table } from "../output.js";
 import { asRecord, readStructuredValue } from "../structured-input.js";
+import { findApi, isApiId } from "../lib/api-ref.js";
+import {
+  createLlmApi,
+  isLlmDefinition,
+  syncLlmDefinition,
+  validateLlmDefinition,
+  type LlmDefinition,
+} from "../lib/llm-definition.js";
 
 interface ActionResult<T = unknown> { success: boolean; result?: T; data?: T; message?: string; error?: string }
 interface DefinitionEnvelope { definition: Record<string, unknown>; etag: string; published?: { revision: number } | null }
@@ -68,13 +76,92 @@ const diff = new Command("diff")
     try { const result = await execute<any>("dotmock_diff_definition", { apiId }); if (isJsonMode()) json(result); else { info(`Compared with revision ${result.fromRevision ?? "none"}`); for (const change of result.changes || []) console.log(`${change.path}: ${JSON.stringify(change.before)} -> ${JSON.stringify(change.after)}`); } } catch (cause) { handleError(cause); }
   });
 
+function assertValidLlm(definition: LlmDefinition, file: string): void {
+  const issues = validateLlmDefinition(definition);
+  if (!isJsonMode()) for (const issue of issues.filter((i) => i.severity === "warning")) info(`WARNING ${issue.path}: ${issue.message}`);
+  const errors = issues.filter((issue) => issue.severity === "error");
+  if (errors.length) throw new Error(`Invalid ${file}:\n${errors.map((issue) => `  ${issue.path}: ${issue.message}`).join("\n")}`);
+}
+
+/** Existing hosted API for an LLM definition: --api, then `id`, then `subdomain`/`name`. */
+async function findLlmApi(definition: LlmDefinition, explicit?: string): Promise<string | undefined> {
+  const refs = [explicit, definition.id, definition.subdomain, definition.name].filter((ref): ref is string => typeof ref === "string" && !!ref);
+  if (!refs.length) return undefined;
+  if (explicit && isApiId(explicit)) return explicit;
+  const apis = await execute<unknown>("dotmock_list_apis", {});
+  for (const ref of explicit ? [explicit] : refs) {
+    const hit = findApi(apis, ref);
+    if (typeof hit?.id === "string") return hit.id;
+  }
+  if (explicit) throw new Error(`API ${explicit} not found.`);
+  return undefined;
+}
+
+/** Record the API id in the definition file so later applies target the same API. */
+function writeBackId(file: string, id: string): void {
+  const path = resolve(file);
+  const source = readFileSync(path, "utf8");
+  if (path.endsWith(".json")) {
+    const value = JSON.parse(source);
+    writeFileSync(path, `${JSON.stringify({ schemaVersion: value.schemaVersion, kind: value.kind, id, ...value }, null, 2)}\n`);
+    return;
+  }
+  const lines = source.split("\n");
+  const anchor = lines.findIndex((line) => /^kind:\s*llm\s*$/.test(line));
+  const existing = lines.findIndex((line) => /^id:/.test(line));
+  if (existing >= 0) lines[existing] = `id: ${id}`;
+  else lines.splice(anchor >= 0 ? anchor + 1 : lines.findIndex((line) => line.trim() && !line.startsWith("#")), 0, `id: ${id}`);
+  writeFileSync(path, lines.join("\n"));
+}
+
+async function applyLlm(definition: LlmDefinition, file: string, explicitApi: string | undefined, prune: boolean): Promise<void> {
+  assertValidLlm(definition, file);
+  let apiId = await findLlmApi(definition, explicitApi);
+  let created: Record<string, unknown> | undefined;
+  if (!apiId) {
+    created = await createLlmApi(definition);
+    apiId = String(created.id);
+    writeBackId(file, apiId);
+  }
+  const result = await syncLlmDefinition(apiId, definition, { prune });
+  const url = created ? String(created.fullUrl ?? created.url ?? "") : "";
+  if (isJsonMode()) { json({ ...result, createdApi: !!created, ...(url ? { url } : {}) }); return; }
+  if (created) success(`Created LLM API ${String(created.name ?? definition.name ?? "")} (${apiId})${url ? ` at ${url}` : ""}; id saved to ${file}.`);
+  success(`Applied ${file} to ${apiId}: ${result.created.length} created, ${result.updated.length} updated, ${result.deleted.length} deleted${result.settingsUpdated ? ", settings updated" : ""}.`);
+  if (result.extra.length) info(`Kept hosted fixtures not in the file: ${result.extra.join(", ")} (use --prune to delete them).`);
+  info("LLM fixtures are live immediately. Wire your SDK with `dotmock llm connect " + (definition.subdomain ?? apiId) + "`.");
+}
+
 const plan = new Command("plan")
   .description("Validate a local definition and preview the current draft diff")
-  .requiredOption("--api <id>", "API ID")
-  .requiredOption("-f, --file <file>", "Local YAML or JSON definition")
+  .option("--api <id>", "API ID (LLM definitions: optional, defaults to the file's id/subdomain)")
+  .option("-f, --file <file>", "Local YAML or JSON definition", "dotmock.yaml")
   .action(async ({ api: apiId, file }) => {
     try {
       const definition = loadDefinition(file);
+      if (isLlmDefinition(definition)) {
+        assertValidLlm(definition, file);
+        const existing = await findLlmApi(definition, apiId);
+        const remote = existing ? await execute<unknown>("dotmock_list_llm_fixtures", { apiId: existing }) : [];
+        const remoteNames = new Set((Array.isArray(remote) ? remote : []).map((fixture: any) => String(fixture?.name ?? "")));
+        const localNames = (definition.fixtures ?? []).map((fixture) => String(fixture.name));
+        const result = {
+          valid: true,
+          apiId: existing ?? null,
+          createApi: !existing,
+          create: localNames.filter((name) => !remoteNames.has(name)),
+          update: localNames.filter((name) => remoteNames.has(name)),
+          extra: [...remoteNames].filter((name) => !localNames.includes(name)),
+        };
+        if (isJsonMode()) { json(result); return; }
+        if (result.createApi) info(`Will create a new LLM API (${definition.subdomain ?? definition.name ?? "unnamed"}).`);
+        info(`Fixtures to create: ${result.create.join(", ") || "none"}`);
+        info(`Fixtures to update: ${result.update.join(", ") || "none"}`);
+        if (result.extra.length) info(`Hosted fixtures not in the file (kept unless --prune): ${result.extra.join(", ")}`);
+        success("Plan is valid");
+        return;
+      }
+      if (!apiId) throw new Error("--api is required for non-LLM definitions.");
       const [validation, current] = await Promise.all([
         execute<any>("dotmock_validate_definition", { apiId, definition }),
         execute<DefinitionEnvelope>("dotmock_get_definition", { apiId }),
@@ -86,13 +173,16 @@ const plan = new Command("plan")
   });
 
 const apply = new Command("apply")
-  .description("Apply a local definition to the shared draft without publishing")
-  .requiredOption("--api <id>", "API ID")
-  .requiredOption("-f, --file <file>", "Local YAML or JSON definition")
+  .description("Apply a local definition (LLM definitions sync fixtures live; others update the draft without publishing)")
+  .option("--api <id>", "API ID (LLM definitions: optional, defaults to the file's id/subdomain, created if missing)")
+  .option("-f, --file <file>", "Local YAML or JSON definition", "dotmock.yaml")
   .option("--etag <etag>", "Expected draft ETag (defaults to a fresh pull)")
-  .action(async ({ api: apiId, file, etag }) => {
+  .option("--prune", "LLM definitions: delete hosted fixtures that are not in the file")
+  .action(async ({ api: apiId, file, etag, prune }) => {
     try {
       const definition = loadDefinition(file);
+      if (isLlmDefinition(definition)) return await applyLlm(definition, file, apiId, !!prune);
+      if (!apiId) throw new Error("--api is required for non-LLM definitions.");
       const expected = etag || (await execute<DefinitionEnvelope>("dotmock_get_definition", { apiId })).etag;
       const result = await execute<any>("dotmock_update_definition_draft", { apiId, etag: expected, definition });
       if (isJsonMode()) json(result); else { success(`Draft updated (${result.etag})`); info("Live traffic is unchanged. Run validation and explicitly publish in DotMock when ready."); }

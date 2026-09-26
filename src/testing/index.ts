@@ -1,104 +1,97 @@
 /**
- * Test helpers for vitest / jest / node:test.
+ * Test helpers for vitest / jest / node:test against a hosted DotMock LLM mock.
  *
- *   import { startDotmock, resetDotmock, getJournal, expectFixtureMatched } from "@dotmock/cli/testing";
+ *   import { connectDotmock, resetDotmock, expectFixtureMatched } from "@dotmock/cli/testing";
  *
- *   beforeAll(async () => { await startDotmock({ config: "dotmock.yaml" }); });
- *   afterAll(() => stopDotmock());
+ *   let dotmock;
+ *   beforeAll(async () => { dotmock = await connectDotmock({ api: "assistant" }); });
  *   beforeEach(() => resetDotmock());
+ *   // new OpenAI({ baseURL: dotmock.openaiBaseUrl, apiKey: "dotmock", defaultHeaders: dotmock.headers })
  *
- * When DOTMOCK_URL is set (e.g. by the dotmock GitHub Action) and no config is
- * passed, the helpers attach to that server instead of starting a new one.
+ * Defaults come from the environment, so inside the DotMock GitHub Action no
+ * arguments are needed: DOTMOCK_API (id or subdomain), DOTMOCK_API_KEY (or the
+ * key saved by `dotmock login`), DOTMOCK_SESSION, and DOTMOCK_API_URL.
+ *
+ * Every request should carry `X-Dotmock-Session: <session>` (see `headers`) so
+ * sequence counters and the journal are isolated per test run.
  */
 import { AssertionError } from "node:assert";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { stringify as stringifyYaml } from "yaml";
-import {
-  fetchLocalJournal,
-  filterJournal,
-  fixtureOf,
-  resetLocal,
-  type JournalEntry,
-  type JournalFilter,
-} from "../lib/journal.js";
-import {
-  assertValidProject,
-  loadProjectConfig,
-  normalizeProjectConfig,
-  type ProjectConfig,
-  type ResolvedApi,
-} from "../lib/project-config.js";
-import { apiUrls, freePort, isHealthy, sdkEnv, startServer, type ApiUrl, type RuntimePreference } from "../lib/serve.js";
+import { randomUUID } from "node:crypto";
+import { getApiKey, getBaseUrl } from "../config.js";
+import type { ActionCaller } from "../lib/api-ref.js";
+import { buildConnectInfo } from "../lib/connect.js";
+import { entryKey, filterJournal, fixtureOf, normalizeJournal, type JournalEntry } from "../lib/journal.js";
+import { fetchMockApi } from "../lib/mock-url.js";
 
 export type { JournalEntry, JournalFilter } from "../lib/journal.js";
-export type { ProjectConfig } from "../lib/project-config.js";
 
-export interface StartDotmockOptions {
-  /** Path to dotmock.yaml, or an inline project object. Defaults to $DOTMOCK_CONFIG or ./dotmock.yaml. */
-  config?: string | ProjectConfig | Record<string, unknown>;
-  /** Port to bind (default: a free port). */
-  port?: number;
-  runtime?: RuntimePreference;
-  image?: string;
-  timeoutMs?: number;
-  /** Also set OPENAI_BASE_URL / ANTHROPIC_BASE_URL / DOTMOCK_URL on process.env (default true). */
+export const SESSION_HEADER = "X-Dotmock-Session";
+
+export interface ConnectDotmockOptions {
+  /** API id, subdomain, or name. Default: $DOTMOCK_API. */
+  api?: string;
+  /** DotMock API key. Default: $DOTMOCK_API_KEY or the key saved by `dotmock login`. */
+  apiKey?: string;
+  /** DotMock API base URL. Default: $DOTMOCK_API_URL or https://dotmock.com/api. */
+  apiUrl?: string;
+  /** X-Dotmock-Session for this run. Default: $DOTMOCK_SESSION or a random `test-<uuid>`. */
+  session?: string;
+  /** Reset the session's sequence counters on connect (default true). */
+  reset?: boolean;
+  /**
+   * Export DOTMOCK_URL / OPENAI_BASE_URL / ANTHROPIC_BASE_URL / DOTMOCK_SESSION /
+   * DOTMOCK_API on process.env (and placeholder provider keys when unset). Default true.
+   */
   setEnv?: boolean;
 }
 
-export interface DotmockInstance {
-  /** Server root, e.g. http://127.0.0.1:53121 */
-  url: string;
-  apis: ApiUrl[];
-  /** `/{subdomain}` base URL for an API (default: first API). */
-  baseUrl(api?: string): string;
-  /** OpenAI-compatible base URL (`.../v1`) for an LLM API (default: first LLM API). */
-  openaiBaseUrl(api?: string): string;
+export interface DotmockConnection {
+  /** API id. */
+  apiId: string;
+  session: string;
+  /** Hosted mock root, e.g. https://assistant-t1a2b3c4.mock.rest */
+  baseUrl: string;
+  /** OpenAI-compatible base URL (`<baseUrl>/v1`). */
+  openaiBaseUrl: string;
+  /** Anthropic SDK base URL (the SDK appends /v1/messages). */
+  anthropicBaseUrl: string;
+  /** Headers to send with every request (`X-Dotmock-Session`). */
+  headers: Record<string, string>;
   env: Record<string, string>;
-  /** True when attached to an externally started server (DOTMOCK_URL). */
-  external: boolean;
-  stop(): Promise<void>;
+  reset(): Promise<void>;
+  journal(options?: Omit<JournalOptions, "connection">): Promise<JournalEntry[]>;
+  expectFixtureMatched(name: string, options?: ExpectFixtureOptions): Promise<JournalEntry[]>;
+  disconnect(): void;
 }
 
-let current: DotmockInstance | null = null;
+let current: DotmockConnection | null = null;
+const callers = new WeakMap<DotmockConnection, ActionCaller>();
+/** Journal entries that existed at the last reset, per connection + session (the hosted journal is not cleared). */
+const baselines = new WeakMap<DotmockConnection, Map<string, Set<string>>>();
 const previousEnv: Record<string, string | undefined> = {};
 
-function instanceFor(url: string, resolved: ResolvedApi[], stop: () => Promise<void>, external: boolean): DotmockInstance {
-  const apis = apiUrls(resolved, url);
-  const find = (api?: string, llm = false): ApiUrl | undefined =>
-    api ? apis.find((a) => a.subdomain === api || a.name === api) : apis.find((a) => !llm || a.type === "llm");
-  return {
-    url,
-    apis,
-    external,
-    env: sdkEnv(resolved, url),
-    baseUrl(api) {
-      const hit = find(api);
-      if (hit) return hit.baseUrl;
-      if (api) return `${url}/${api}`;
-      return url;
-    },
-    openaiBaseUrl(api) {
-      const hit = find(api, true);
-      return hit?.openaiBaseUrl ?? `${api ? `${url}/${api}` : url}/v1`;
-    },
-    stop,
+function actionCaller(apiKey: string | undefined, apiUrl: string | undefined): ActionCaller {
+  return async <T>(action: string, params: Record<string, unknown>): Promise<T> => {
+    const key = apiKey ?? getApiKey();
+    if (!key) throw new Error("No DotMock API key: pass { apiKey }, set DOTMOCK_API_KEY, or run `dotmock login`.");
+    const response = await fetch(`${(apiUrl ?? getBaseUrl()).replace(/\/+$/, "")}/agent/actions/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": key },
+      body: JSON.stringify({ action, params, context: {} }),
+    });
+    const text = await response.text();
+    let body: Record<string, any> = {};
+    try { body = text ? JSON.parse(text) : {}; } catch { body = { message: text }; }
+    if (!response.ok || body.success === false) {
+      throw new Error(`DotMock ${action} failed${response.ok ? "" : ` (HTTP ${response.status})`}: ${body.message ?? body.error ?? text.slice(0, 300)}`);
+    }
+    return (body.result ?? body.data) as T;
   };
 }
 
-function materializeConfig(config: StartDotmockOptions["config"]): { path: string; cleanup: () => void } {
-  if (config === undefined || typeof config === "string") {
-    return { path: config ?? process.env.DOTMOCK_CONFIG ?? "dotmock.yaml", cleanup: () => undefined };
-  }
-  const dir = mkdtempSync(join(tmpdir(), "dotmock-test-"));
-  const path = join(dir, "dotmock.yaml");
-  writeFileSync(path, stringifyYaml(normalizeProjectConfig(config)));
-  return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
-}
-
-function applyEnv(env: Record<string, string>): void {
+function applyEnv(env: Record<string, string>, onlyIfUnset: string[]): void {
   for (const [key, value] of Object.entries(env)) {
+    if (onlyIfUnset.includes(key) && process.env[key]) continue;
     if (!(key in previousEnv)) previousEnv[key] = process.env[key];
     process.env[key] = value;
   }
@@ -112,102 +105,94 @@ function restoreEnv(): void {
   }
 }
 
-/** Ask a running server which APIs it serves (GET /__dotmock/apis); falls back to the local config file. */
-async function discoverApis(url: string): Promise<ResolvedApi[]> {
-  try {
-    const response = await fetch(`${url}/__dotmock/apis`, { signal: AbortSignal.timeout(2000) });
-    if (response.ok) {
-      const body = (await response.json()) as { apis?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>;
-      const list = Array.isArray(body) ? body : body.apis ?? [];
-      return list
-        .filter((api) => typeof api.subdomain === "string")
-        .map((api) => ({
-          name: String(api.name ?? api.subdomain),
-          subdomain: String(api.subdomain),
-          type: String(api.type) === "llm" ? "llm" : "openapi",
-        }));
-    }
-  } catch {
-    // fall through
-  }
-  try {
-    return loadProjectConfig(process.env.DOTMOCK_CONFIG ?? "dotmock.yaml").apis;
-  } catch {
-    return [];
-  }
+/** Resolve a hosted LLM mock and return its base URLs, session headers, and runtime helpers. */
+export async function connectDotmock(options: ConnectDotmockOptions = {}): Promise<DotmockConnection> {
+  const ref = options.api ?? process.env.DOTMOCK_API;
+  if (!ref) throw new Error("connectDotmock needs { api } (id or subdomain) or DOTMOCK_API.");
+  const call = actionCaller(options.apiKey, options.apiUrl);
+  const session = options.session ?? process.env.DOTMOCK_SESSION ?? `test-${randomUUID()}`;
+  const { apiId, baseUrl } = await fetchMockApi(ref, call);
+  const info = buildConnectInfo(baseUrl, undefined, session);
+  const env = { ...info.env, DOTMOCK_API: apiId };
+
+  const connection: DotmockConnection = {
+    apiId,
+    session,
+    baseUrl: info.baseUrl,
+    openaiBaseUrl: info.openaiBaseUrl,
+    anthropicBaseUrl: info.baseUrl,
+    headers: { [SESSION_HEADER]: session },
+    env,
+    reset: () => resetDotmock({ connection }),
+    journal: (opts = {}) => getJournal({ ...opts, connection }),
+    expectFixtureMatched: (name, opts = {}) => expectFixtureMatched(name, { ...opts, connection }),
+    disconnect() {
+      if (current === connection) current = null;
+      restoreEnv();
+    },
+  };
+  current = connection;
+  callers.set(connection, call);
+  if (options.setEnv ?? true) applyEnv(env, ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]);
+  if (options.reset ?? true) await connection.reset();
+  return connection;
 }
 
-/** Start (or attach to) a local DotMock server. Idempotent: returns the running instance. */
-export async function startDotmock(options: StartDotmockOptions = {}): Promise<DotmockInstance> {
-  if (current) return current;
-  const setEnv = options.setEnv ?? true;
-
-  const externalUrl = process.env.DOTMOCK_URL?.replace(/\/+$/, "");
-  if (externalUrl && options.config === undefined) {
-    if (!(await isHealthy(externalUrl))) {
-      throw new Error(`DOTMOCK_URL=${externalUrl} is set but ${externalUrl}/__dotmock/health is not healthy.`);
-    }
-    current = instanceFor(externalUrl, await discoverApis(externalUrl), async () => { current = null; }, true);
-    return current;
-  }
-
-  const { path, cleanup } = materializeConfig(options.config);
-  try {
-    const loaded = loadProjectConfig(path);
-    assertValidProject(loaded);
-    const port = options.port ?? (await freePort());
-    const server = await startServer({
-      configPath: loaded.file,
-      port,
-      runtime: options.runtime,
-      image: options.image,
-      timeoutMs: options.timeoutMs ?? 60_000,
-      name: `dotmock-test-${port}`,
-    });
-    const instance = instanceFor(server.state.baseUrl, loaded.apis, async () => {
-      await server.stop();
-      cleanup();
-      if (setEnv) restoreEnv();
-      if (current === instance) current = null;
-    }, false);
-    if (setEnv) applyEnv(instance.env);
-    current = instance;
-    return instance;
-  } catch (cause) {
-    cleanup();
-    throw cause;
-  }
-}
-
-export async function stopDotmock(): Promise<void> {
-  await current?.stop();
-  current = null;
-}
-
-function serverUrl(url?: string): string {
-  const resolved = url ?? current?.url ?? process.env.DOTMOCK_URL;
-  if (!resolved) throw new Error("No DotMock server: call startDotmock() first or set DOTMOCK_URL.");
-  return resolved.replace(/\/+$/, "");
+/** Forget the current connection and restore the environment variables it set. */
+export function disconnectDotmock(): void {
+  current?.disconnect();
+  restoreEnv();
 }
 
 export interface RuntimeOptions {
-  /** API subdomain (default: all APIs). */
-  api?: string;
-  /** X-Dotmock-Session to reset / filter. */
+  /** Connection to use (default: the last `connectDotmock()`). */
+  connection?: DotmockConnection;
+  /** Session override (default: the connection's session). */
   session?: string;
-  /** Server URL override (default: started instance or DOTMOCK_URL). */
-  url?: string;
 }
 
-/** Reset sequence counters and the journal (POST /__dotmock/reset). */
+function target(options: RuntimeOptions): { connection: DotmockConnection; call: ActionCaller; session: string } {
+  const connection = options.connection ?? current;
+  const call = connection && callers.get(connection);
+  if (!connection || !call) throw new Error("Not connected: call connectDotmock() first.");
+  return { connection, call, session: options.session ?? connection.session };
+}
+
+async function fetchJournal(call: ActionCaller, apiId: string, session: string, limit: number): Promise<JournalEntry[]> {
+  const payload = await call<unknown>("dotmock_get_llm_journal", { apiId, session, limit });
+  return filterJournal(normalizeJournal(payload), { session });
+}
+
+/**
+ * Reset the session's sequence counters on the hosted API. The hosted journal
+ * keeps an hour of history, so entries recorded before the reset are
+ * remembered and hidden from `getJournal()` / `expectFixtureMatched()`.
+ */
 export async function resetDotmock(options: RuntimeOptions = {}): Promise<void> {
-  await resetLocal(serverUrl(options.url), { api: options.api, session: options.session });
+  const { connection, call, session } = target(options);
+  const result = (await call<Record<string, unknown> | undefined>("dotmock_reset_llm_sequences", { apiId: connection.apiId, session })) ?? {};
+  if (result.reset === false) throw new Error(`DotMock did not reset sequences: ${JSON.stringify(result.warnings ?? result)}`);
+  const seen = new Set((await fetchJournal(call, connection.apiId, session, 1000)).map(entryKey));
+  if (!baselines.has(connection)) baselines.set(connection, new Map());
+  baselines.get(connection)!.set(session, seen);
 }
 
-/** Read the request journal, oldest first. */
-export async function getJournal(options: RuntimeOptions & { fixture?: string } = {}): Promise<JournalEntry[]> {
-  const entries = await fetchLocalJournal(serverUrl(options.url), options.api, { session: options.session, limit: 1000 });
-  return filterJournal(entries, { session: options.session, fixture: options.fixture }).sort(
+export interface JournalOptions extends RuntimeOptions {
+  /** Only entries answered by this fixture name or id. */
+  fixture?: string;
+  limit?: number;
+  /** Include entries recorded before the last `resetDotmock()` (default false). */
+  all?: boolean;
+}
+
+/** Read the session's request journal since the last reset, oldest first. */
+export async function getJournal(options: JournalOptions = {}): Promise<JournalEntry[]> {
+  const { connection, call, session } = target(options);
+  const baseline = options.all ? undefined : baselines.get(connection)?.get(session);
+  const entries = (await fetchJournal(call, connection.apiId, session, options.limit ?? 1000)).filter(
+    (entry) => !baseline?.has(entryKey(entry)),
+  );
+  return filterJournal(entries, { fixture: options.fixture }).sort(
     (a, b) => Number(a.timestamp ?? 0) - Number(b.timestamp ?? 0),
   );
 }
@@ -215,16 +200,29 @@ export async function getJournal(options: RuntimeOptions & { fixture?: string } 
 export interface ExpectFixtureOptions extends RuntimeOptions {
   /** Exact number of matches expected (default: at least one). */
   times?: number;
+  /** How long to wait for journal entries to arrive (default 5000 ms). */
+  timeoutMs?: number;
+  /** Poll interval while waiting (default 250 ms). */
+  intervalMs?: number;
 }
 
 /**
- * Assert that a fixture (by name or id) answered at least one request — or
- * exactly `times` requests. Throws an AssertionError listing what did match,
- * so it works with any test runner.
+ * Assert that a fixture (by name or id) answered at least one request in this
+ * session since the last reset — or exactly `times` requests. Polls the hosted journal briefly
+ * because entries are written asynchronously. Throws an AssertionError listing
+ * what did match, so it works with any test runner.
  */
 export async function expectFixtureMatched(name: string, options: ExpectFixtureOptions = {}): Promise<JournalEntry[]> {
-  const all = await getJournal(options);
-  const hits = filterJournal(all, { fixture: name });
+  const deadline = Date.now() + (options.timeoutMs ?? 5000);
+  let all: JournalEntry[] = [];
+  let hits: JournalEntry[] = [];
+  for (;;) {
+    all = await getJournal(options);
+    hits = filterJournal(all, { fixture: name });
+    const enough = options.times === undefined ? hits.length > 0 : hits.length >= options.times;
+    if (enough || Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, options.intervalMs ?? 250));
+  }
   const ok = options.times === undefined ? hits.length > 0 : hits.length === options.times;
   if (!ok) {
     const seen = all.map((entry) => `${entry.path ?? "?"} -> ${fixtureOf(entry) || "(no match)"}`);

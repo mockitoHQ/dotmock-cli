@@ -15,7 +15,7 @@ describe("mock url resolution (ported from Go CLI)", () => {
     assert.equal(resolveMockBaseUrl({ _dx: { baseUrl: "https://x.dotmock.com/" }, url: "https://y" }), "https://x.dotmock.com");
     assert.equal(resolveMockBaseUrl({ fullUrl: "https://full.example" }), "https://full.example");
     assert.equal(resolveMockBaseUrl({ mockUrl: "https://m.example//" }), "https://m.example");
-    assert.equal(resolveMockBaseUrl({ subdomain: "payments" }), "https://payments.dotmock.com");
+    assert.equal(resolveMockBaseUrl({ subdomain: "payments" }), "https://payments.mock.rest");
     assert.throws(() => resolveMockBaseUrl({}), /did not include a mock URL/);
   });
 });
@@ -53,7 +53,7 @@ describe("mock url + captures CLI", () => {
       const { action } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       const result =
         action === "dotmock_get_api"
-          ? { id: "api-1", subdomain: "payments", _dx: { baseUrl: "https://payments.dotmock.com" } }
+          ? { id: "api-1", subdomain: "payments", _dx: { baseUrl: "https://payments.mock.rest" } }
           : { logs: [{ method: "POST", path: "/v1/orders", body: '{"sku":"sku_123"}' }] };
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ success: true, data: result }));
@@ -73,10 +73,10 @@ describe("mock url + captures CLI", () => {
     });
 
   it("prints the mock URL as text and JSON", async () => {
-    assert.equal((await run("mock", "url", "payments")).stdout.trim(), "https://payments.dotmock.com");
+    assert.equal((await run("mock", "url", "payments")).stdout.trim(), "https://payments.mock.rest");
     assert.deepEqual(JSON.parse((await run("--json", "mock", "url", "payments")).stdout), {
       apiId: "payments",
-      baseUrl: "https://payments.dotmock.com",
+      baseUrl: "https://payments.mock.rest",
     });
   });
 

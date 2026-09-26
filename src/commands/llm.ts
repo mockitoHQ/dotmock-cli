@@ -2,14 +2,13 @@ import chalk from "chalk";
 import { Command } from "commander";
 import { ApiError } from "../client.js";
 import { buildConnectInfo, CONNECT_SNIPPET_KEYS, renderEnv } from "../lib/connect.js";
+import { resolveApiId } from "../lib/api-ref.js";
 import {
   entryKey,
-  fetchLocalJournal,
   filterJournal,
   fixtureOf,
   formatTimestamp,
   normalizeJournal,
-  resetLocal,
   type JournalEntry,
 } from "../lib/journal.js";
 import {
@@ -19,16 +18,8 @@ import {
   resetSequences,
   updateLlmSettings,
 } from "../lib/llm-runtime.js";
-import { fetchMockBaseUrl } from "../lib/mock-url.js";
+import { fetchMockApi } from "../lib/mock-url.js";
 import { error, info, isJsonMode, json, success, table } from "../output.js";
-
-export const DEFAULT_LOCAL_URL = "http://127.0.0.1:8080";
-
-export function localUrl(value: unknown): string | null {
-  if (value === undefined || value === false) return null;
-  const url = typeof value === "string" && value ? value : process.env.DOTMOCK_URL || DEFAULT_LOCAL_URL;
-  return url.replace(/\/+$/, "");
-}
 
 function fail(cause: unknown, what: string): void {
   if (cause instanceof ApiError) error(`${what} failed (HTTP ${cause.status}): ${cause.message}`);
@@ -73,22 +64,20 @@ function chronological(entries: JournalEntry[]): JournalEntry[] {
 
 const journalCommand = new Command("journal")
   .description("Show recent LLM requests and which fixture answered them")
-  .argument("<api>", "API ID or slug (subdomain with --local)")
+  .argument("<api>", "API ID, subdomain, or name")
   .option("--session <id>", "Only entries for this X-Dotmock-Session")
   .option("--fixture <name>", "Only entries answered by this fixture name or id")
   .option("--limit <n>", "Entries to fetch (1-1000)", parseIntStrict("--limit", 1), 50)
   .option("-f, --follow", "Keep polling and print new entries")
   .option("--interval <ms>", "Polling interval for --follow", parseIntStrict("--interval", 100), 1000)
-  .option("--local [url]", "Read a local `dotmock serve` journal (default $DOTMOCK_URL or http://127.0.0.1:8080)")
-  .action(async (apiId: string, opts) => {
-    const local = localUrl(opts.local);
+  .action(async (apiRef: string, opts) => {
+    let apiId = apiRef;
     const fetchEntries = async (): Promise<JournalEntry[]> => {
-      const entries = local
-        ? await fetchLocalJournal(local, apiId, { session: opts.session, limit: opts.limit })
-        : normalizeJournal(await getJournal(apiId, { limit: opts.limit, session: opts.session }));
+      const entries = normalizeJournal(await getJournal(apiId, { limit: opts.limit, session: opts.session }));
       return filterJournal(entries, { session: opts.session, fixture: opts.fixture });
     };
     try {
+      apiId = await resolveApiId(apiRef);
       if (!opts.follow) {
         const entries = await fetchEntries();
         if (isJsonMode()) { json(entries); return; }
@@ -100,7 +89,7 @@ const journalCommand = new Command("journal")
       const seen = new Set<string>();
       let stopped = false;
       process.once("SIGINT", () => { stopped = true; });
-      if (!isJsonMode()) info(`Following journal for ${apiId} (Ctrl+C to stop)...`);
+      if (!isJsonMode()) info(`Following journal for ${apiRef} (Ctrl+C to stop)...`);
       while (!stopped) {
         for (const entry of chronological(await fetchEntries())) {
           const key = entryKey(entry);
@@ -118,15 +107,11 @@ const journalCommand = new Command("journal")
 
 const resetCommand = new Command("reset")
   .description("Reset LLM sequence counters (all sessions, or one with --session)")
-  .argument("<api>", "API ID or slug (subdomain with --local)")
+  .argument("<api>", "API ID, subdomain, or name")
   .option("--session <id>", "Only reset this X-Dotmock-Session")
-  .option("--local [url]", "Reset a local `dotmock serve` (counters + journal)")
-  .action(async (apiId: string, opts) => {
+  .action(async (apiRef: string, opts) => {
     try {
-      const local = localUrl(opts.local);
-      const result = local
-        ? await resetLocal(local, { api: apiId, session: opts.session })
-        : await resetSequences(apiId, opts.session);
+      const result = await resetSequences(await resolveApiId(apiRef), opts.session);
       if (isJsonMode()) { json(result ?? { reset: true }); return; }
       const record = (result ?? {}) as Record<string, unknown>;
       if (record.reset === false) {
@@ -134,7 +119,7 @@ const resetCommand = new Command("reset")
         process.exitCode = 1;
         return;
       }
-      success(`Reset sequence counters for ${apiId}${opts.session ? ` (session ${opts.session})` : " (all sessions)"}.`);
+      success(`Reset sequence counters for ${apiRef}${opts.session ? ` (session ${opts.session})` : " (all sessions)"}.`);
     } catch (cause) { fail(cause, "Reset"); }
   });
 
@@ -142,12 +127,12 @@ const resetCommand = new Command("reset")
 
 const recordingsCommand = new Command("recordings")
   .description("List VCR recordings captured from upstream providers")
-  .argument("<api>", "API ID or slug")
+  .argument("<api>", "API ID, subdomain, or name")
   .option("--limit <n>", "Recordings to fetch (1-1000)", parseIntStrict("--limit", 1), 50)
   .option("--provider <name>", "Only recordings from this provider (openai, anthropic, ...)")
-  .action(async (apiId: string, opts) => {
+  .action(async (apiRef: string, opts) => {
     try {
-      const result = await listRecordings(apiId, { limit: opts.limit, provider: opts.provider });
+      const result = await listRecordings(await resolveApiId(apiRef), { limit: opts.limit, provider: opts.provider });
       const items = Array.isArray(result) ? (result as Record<string, unknown>[]) : [];
       if (isJsonMode()) { json(result); return; }
       if (!items.length) { info("No recordings. Enable VCR with `dotmock llm vcr <api> --upstream openai=https://api.openai.com --mode record`."); return; }
@@ -169,16 +154,16 @@ const recordingsCommand = new Command("recordings")
 
 const promoteCommand = new Command("promote")
   .description("Turn a VCR recording into a fixture")
-  .argument("<api>", "API ID or slug")
+  .argument("<api>", "API ID, subdomain, or name")
   .argument("<recording>", "Recording id or list index from `dotmock llm recordings`")
   .option("--name <name>", "Fixture name")
   .option("--priority <n>", "Fixture priority", parseIntStrict("--priority", 0))
-  .action(async (apiId: string, recording: string, opts) => {
+  .action(async (apiRef: string, recording: string, opts) => {
     try {
       const overrides: { name?: string; priority?: number } = {};
       if (opts.name) overrides.name = opts.name;
       if (opts.priority !== undefined) overrides.priority = opts.priority;
-      const result = (await promoteRecording(apiId, recording, overrides)) as Record<string, unknown> | undefined;
+      const result = (await promoteRecording(await resolveApiId(apiRef), recording, overrides)) as Record<string, unknown> | undefined;
       if (isJsonMode()) { json(result); return; }
       success(`Promoted recording ${recording} to fixture ${String(result?.name ?? result?.id ?? "")}.`);
     } catch (cause) { fail(cause, "Promote"); }
@@ -215,15 +200,15 @@ export function buildVcrSettings(upstreams: string[], mode?: string): Record<str
 
 const vcrCommand = new Command("vcr")
   .description("Configure Lite VCR: proxy unmatched requests to real providers and record them")
-  .argument("<api>", "API ID or slug")
+  .argument("<api>", "API ID, subdomain, or name")
   .option("--upstream <provider=url>", "Upstream base URL per provider, e.g. openai=https://api.openai.com (repeatable)", collect, [])
-  .option("--mode <mode>", "record (proxy + record unmatched), replay (serve recordings), or off")
-  .action(async (apiId: string, opts) => {
+  .option("--mode <mode>", "record (proxy + record unmatched), replay (answer from recordings), or off")
+  .action(async (apiRef: string, opts) => {
     try {
       const settings = buildVcrSettings(opts.upstream, opts.mode);
-      const result = await updateLlmSettings(apiId, settings);
+      const result = await updateLlmSettings(await resolveApiId(apiRef), settings);
       if (isJsonMode()) { json(result); return; }
-      success(`Updated VCR settings for ${apiId}.`);
+      success(`Updated VCR settings for ${apiRef}.`);
       const upstreams = settings.vcrUpstreams as Record<string, string> | undefined;
       for (const [provider, url] of Object.entries(upstreams ?? {})) info(`${provider} -> ${url}`);
       if (opts.mode) info(`Mode: ${opts.mode} (fallback.type=${VCR_MODES[opts.mode]})`);
@@ -235,16 +220,15 @@ const vcrCommand = new Command("vcr")
 
 const connectCommand = new Command("connect")
   .description("Print the base URL, env vars, and SDK snippets for an LLM mock")
-  .argument("<api>", "API ID or slug (subdomain with --local)")
-  .option("--local [url]", "Use a local `dotmock serve` (default $DOTMOCK_URL or http://127.0.0.1:8080)")
+  .argument("<api>", "API ID, subdomain, or name")
+  .option("--session <id>", "X-Dotmock-Session to use in snippets and DOTMOCK_SESSION")
   .option("--sdk <name>", `Only print one snippet (${CONNECT_SNIPPET_KEYS.join(", ")})`)
   .option("--model <model>", "Model name used in snippets", "gpt-4o-mini")
   .option("--env", "Only print shell exports (eval \"$(dotmock llm connect <api> --env)\")")
-  .action(async (apiId: string, opts) => {
+  .action(async (apiRef: string, opts) => {
     try {
-      const local = localUrl(opts.local);
-      const baseUrl = local ? `${local}/${apiId}` : await fetchMockBaseUrl(apiId);
-      const connect = buildConnectInfo(baseUrl, opts.model);
+      const { apiId, baseUrl } = await fetchMockApi(apiRef);
+      const connect = { apiId, ...buildConnectInfo(baseUrl, opts.model, opts.session) };
       if (opts.sdk && !connect.snippets[opts.sdk]) throw new Error(`Unknown --sdk ${opts.sdk}. Use one of: ${CONNECT_SNIPPET_KEYS.join(", ")}.`);
       if (isJsonMode()) {
         json(opts.sdk ? { ...connect, snippets: { [opts.sdk]: connect.snippets[opts.sdk] } } : connect);

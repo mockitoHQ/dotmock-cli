@@ -6,7 +6,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@dotmock/cli": "^0.2.0",
+    "@dotmock/cli": "^0.3.0",
     "openai": "^5.0.0",
     "vitest": "^3.0.0"
   }

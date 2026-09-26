@@ -1,27 +1,33 @@
-// Example: test LLM-calling code against a local DotMock server.
-// Runs `dotmock-server` from PATH, or the ghcr.io/mockitohq/dotmock-server image via Docker.
-// In CI with the dotmock GitHub Action, DOTMOCK_URL is already set and startDotmock() attaches to it.
+// Example: test LLM-calling code against a hosted DotMock LLM mock.
+//
+//   dotmock login && dotmock config apply   # once: creates the mock from dotmock.yaml
+//   DOTMOCK_API=assistant npm test
+//
+// In CI, the DotMock GitHub Action exports DOTMOCK_API, DOTMOCK_API_KEY and a
+// per-run DOTMOCK_SESSION, so connectDotmock() needs no arguments.
 import OpenAI from "openai";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+  connectDotmock,
+  disconnectDotmock,
   expectFixtureMatched,
   getJournal,
   resetDotmock,
-  startDotmock,
-  stopDotmock,
+  type DotmockConnection,
 } from "@dotmock/cli/testing";
 
+let dotmock: DotmockConnection;
 let client: OpenAI;
 
 beforeAll(async () => {
-  const dotmock = await startDotmock({ config: "dotmock.yaml" });
-  // startDotmock also exports OPENAI_BASE_URL, so `new OpenAI()` would work too.
-  client = new OpenAI({ baseURL: dotmock.openaiBaseUrl("assistant"), apiKey: "dotmock" });
-}, 120_000);
+  dotmock = await connectDotmock({ api: process.env.DOTMOCK_API ?? "assistant" });
+  // connectDotmock also exports OPENAI_BASE_URL; the session header keeps this run isolated.
+  client = new OpenAI({ baseURL: dotmock.openaiBaseUrl, apiKey: "dotmock", defaultHeaders: dotmock.headers });
+}, 30_000);
 
-afterAll(() => stopDotmock());
+afterAll(() => disconnectDotmock());
 
-// Fresh sequence counters and an empty journal for every test.
+// Fresh sequence counters before every test; journal assertions only see requests made after the reset.
 beforeEach(() => resetDotmock());
 
 describe("assistant", () => {
@@ -68,6 +74,7 @@ describe("assistant", () => {
         // Disable SDK retries so the 429 reaches the test immediately.
       }, { maxRetries: 0 }),
     ).rejects.toMatchObject({ status: 429 });
+    await expectFixtureMatched("rate-limit", { times: 1 });
     const journal = await getJournal();
     expect(journal.at(-1)?.response?.fixtureName).toBe("rate-limit");
   });
