@@ -14,7 +14,7 @@ export async function executeAction<T>(
 ): Promise<T> {
   const response = await api<ActionEnvelope<T>>(
     "POST",
-    "/internal/mcp/execute-action",
+    "/agent/actions/execute",
     { action, params, context: {} },
   );
 

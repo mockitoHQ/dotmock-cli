@@ -50,7 +50,7 @@ type CliAuthPollResponse =
 
 async function validateKey(apiKey: string): Promise<ValidateKeyResponse> {
   const baseUrl = getBaseUrl();
-  const url = `${baseUrl}/internal/mcp/validate-key`;
+  const url = `${baseUrl}/agent/actions/validate-key`;
 
   const response = await fetch(url, {
     method: 'POST',

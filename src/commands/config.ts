@@ -11,7 +11,7 @@ interface ActionResult<T = unknown> { success: boolean; result?: T; data?: T; me
 interface DefinitionEnvelope { definition: Record<string, unknown>; etag: string; published?: { revision: number } | null }
 
 async function execute<T>(action: string, params: Record<string, unknown>): Promise<T> {
-  const response = await api<ActionResult<T>>("POST", "/internal/mcp/execute-action", { action, params, context: {} });
+  const response = await api<ActionResult<T>>("POST", "/agent/actions/execute", { action, params, context: {} });
   if (!response.success) throw new Error(response.message || response.error || `${action} failed`);
   return (response.result ?? response.data) as T;
 }

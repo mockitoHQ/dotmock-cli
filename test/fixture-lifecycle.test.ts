@@ -20,7 +20,7 @@ describe("LLM fixture CLI lifecycle", () => {
 
   before(async () => {
     server = createServer(async (request, response) => {
-      if (request.method !== "POST" || request.url !== "/internal/mcp/execute-action") {
+      if (request.method !== "POST" || request.url !== "/agent/actions/execute") {
         response.writeHead(404, { "Content-Type": "application/json" });
         response.end(JSON.stringify({ message: "unexpected direct request" }));
         return;

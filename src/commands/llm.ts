@@ -84,8 +84,8 @@ const journalCommand = new Command("journal")
     const local = localUrl(opts.local);
     const fetchEntries = async (): Promise<JournalEntry[]> => {
       const entries = local
-        ? await fetchLocalJournal(local, apiId)
-        : normalizeJournal(await getJournal(apiId, opts.limit));
+        ? await fetchLocalJournal(local, apiId, { session: opts.session, limit: opts.limit })
+        : normalizeJournal(await getJournal(apiId, { limit: opts.limit, session: opts.session }));
       return filterJournal(entries, { session: opts.session, fixture: opts.fixture });
     };
     try {
@@ -143,17 +143,19 @@ const resetCommand = new Command("reset")
 const recordingsCommand = new Command("recordings")
   .description("List VCR recordings captured from upstream providers")
   .argument("<api>", "API ID or slug")
-  .option("--limit <n>", "Recordings to fetch (1-1000)", parseIntStrict("--limit", 1), 100)
+  .option("--limit <n>", "Recordings to fetch (1-1000)", parseIntStrict("--limit", 1), 50)
+  .option("--provider <name>", "Only recordings from this provider (openai, anthropic, ...)")
   .action(async (apiId: string, opts) => {
     try {
-      const result = await listRecordings(apiId, opts.limit);
+      const result = await listRecordings(apiId, { limit: opts.limit, provider: opts.provider });
       const items = Array.isArray(result) ? (result as Record<string, unknown>[]) : [];
       if (isJsonMode()) { json(result); return; }
       if (!items.length) { info("No recordings. Enable VCR with `dotmock llm vcr <api> --upstream openai=https://api.openai.com --mode record`."); return; }
       table(
-        ["Index", "Recorded", "Provider", "Model", "Status", "Endpoint"],
+        ["Index", "Id", "Recorded", "Provider", "Model", "Status", "Endpoint"],
         items.map((item) => [
           String(item.index ?? ""),
+          String(item.id ?? ""),
           formatTimestamp(item.recordedAt),
           String(item.provider ?? ""),
           String(item.model ?? ""),
@@ -161,26 +163,24 @@ const recordingsCommand = new Command("recordings")
           String(item.endpoint ?? ""),
         ]),
       );
-      info("Promote one to a fixture with `dotmock llm promote <api> <index>`.");
+      info("Promote one to a fixture with `dotmock llm promote <api> <id-or-index>`.");
     } catch (cause) { fail(cause, "Recordings request"); }
   });
 
 const promoteCommand = new Command("promote")
   .description("Turn a VCR recording into a fixture")
   .argument("<api>", "API ID or slug")
-  .argument("<index>", "Recording index from `dotmock llm recordings`", parseIntStrict("index", 0))
+  .argument("<recording>", "Recording id or list index from `dotmock llm recordings`")
   .option("--name <name>", "Fixture name")
   .option("--priority <n>", "Fixture priority", parseIntStrict("--priority", 0))
-  .option("--disabled", "Create the fixture disabled")
-  .action(async (apiId: string, index: number, opts) => {
+  .action(async (apiId: string, recording: string, opts) => {
     try {
-      const overrides: { name?: string; priority?: number; enabled?: boolean } = {};
+      const overrides: { name?: string; priority?: number } = {};
       if (opts.name) overrides.name = opts.name;
       if (opts.priority !== undefined) overrides.priority = opts.priority;
-      if (opts.disabled) overrides.enabled = false;
-      const result = (await promoteRecording(apiId, index, overrides)) as Record<string, unknown> | undefined;
+      const result = (await promoteRecording(apiId, recording, overrides)) as Record<string, unknown> | undefined;
       if (isJsonMode()) { json(result); return; }
-      success(`Promoted recording ${index} to fixture ${String(result?.name ?? result?.id ?? "")}.`);
+      success(`Promoted recording ${recording} to fixture ${String(result?.name ?? result?.id ?? "")}.`);
     } catch (cause) { fail(cause, "Promote"); }
   });
 

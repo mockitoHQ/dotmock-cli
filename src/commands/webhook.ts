@@ -662,7 +662,7 @@ async function executeAction<T = unknown>(
   action: string,
   params: Record<string, unknown>,
 ): Promise<T> {
-  const response = await api<ActionResult<T>>('POST', '/internal/mcp/execute-action', {
+  const response = await api<ActionResult<T>>('POST', '/agent/actions/execute', {
     action,
     params,
     context: {},

@@ -37,7 +37,7 @@ export const statusCommand = new Command('status')
       }
 
       const baseUrl = getBaseUrl();
-      const url = `${baseUrl}/internal/mcp/validate-key`;
+      const url = `${baseUrl}/agent/actions/validate-key`;
 
       const response = await fetch(url, {
         method: 'POST',

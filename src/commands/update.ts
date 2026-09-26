@@ -16,7 +16,7 @@ async function executeAction(
   action: string,
   params: Record<string, unknown>,
 ): Promise<ActionResult> {
-  return api<ActionResult>("POST", "/internal/mcp/execute-action", {
+  return api<ActionResult>("POST", "/agent/actions/execute", {
     action,
     params,
     context: {},

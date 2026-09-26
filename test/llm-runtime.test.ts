@@ -53,8 +53,6 @@ describe("dotmock llm CLI against the backend", () => {
   let server: Server;
   let baseUrl: string;
   let requests: Array<{ method: string; url: string; body: any }> = [];
-  const knownActions = new Set(["dotmock_reset_llm_runtime", "dotmock_update_llm_runtime_settings", "dotmock_get_api"]);
-
   before(async () => {
     server = createServer(async (request, response) => {
       const chunks: Buffer[] = [];
@@ -62,19 +60,21 @@ describe("dotmock llm CLI against the backend", () => {
       const text = Buffer.concat(chunks).toString("utf8");
       const body = text ? JSON.parse(text) : undefined;
       requests.push({ method: request.method!, url: request.url!, body });
-      const send = (status: number, value: unknown) => {
-        response.writeHead(status, { "Content-Type": "application/json" });
-        response.end(JSON.stringify(value));
+      const ok = (data: unknown) => {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ success: true, data }));
       };
-      if (request.url === "/internal/mcp/execute-action") {
-        if (!knownActions.has(body.action)) return send(400, { message: `Unknown action: ${body.action}` });
-        if (body.action === "dotmock_get_api") return send(200, { success: true, data: { subdomain: "chat", _dx: { baseUrl: "https://chat.dotmock.com" } } });
-        return send(200, { success: true, data: { reset: true, keysDeleted: 1, ...body.params } });
+      if (request.url !== "/agent/actions/execute" || request.headers["x-api-key"] !== "mck_test") {
+        response.writeHead(404, { "Content-Type": "application/json" });
+        return response.end(JSON.stringify({ message: "unexpected route" }));
       }
-      if (request.url?.startsWith("/mock-apis/api-1/llm-fixtures/journal")) return send(200, JOURNAL);
-      if (request.url?.startsWith("/mock-apis/api-1/llm-fixtures/recordings/3/promote")) return send(201, { id: "fx-new", name: body.name ?? "Recorded" });
-      if (request.url?.startsWith("/mock-apis/api-1/llm-fixtures/recordings")) return send(200, [{ index: 0, provider: "openai", model: "gpt-4o", status: 200, request: {}, response: {} }]);
-      send(404, { message: "not found" });
+      switch (body.action) {
+        case "dotmock_get_api": return ok({ subdomain: "chat", _dx: { baseUrl: "https://chat.dotmock.com" } });
+        case "dotmock_get_llm_journal": return ok(JOURNAL);
+        case "dotmock_list_llm_recordings": return ok([{ index: 0, id: "rec_1", provider: "openai", model: "gpt-4o", status: 200, request: {}, response: {} }]);
+        case "dotmock_promote_llm_recording": return ok({ id: "fx-new", name: body.params.name ?? "Recorded" });
+        default: return ok({ reset: true, keysDeleted: 1, ...body.params });
+      }
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
@@ -91,26 +91,27 @@ describe("dotmock llm CLI against the backend", () => {
       env: { ...process.env, DOTMOCK_API_KEY: "mck_test", DOTMOCK_API_URL: baseUrl },
     })).stdout;
 
-  it("journal falls back to the REST route and applies filters", async () => {
-    const entries = JSON.parse(await run("llm", "journal", "api-1", "--fixture", "rate-limit"));
+  it("journal uses the journal action and filters by fixture", async () => {
+    const entries = JSON.parse(await run("llm", "journal", "api-1", "--fixture", "rate-limit", "--session", "default"));
     assert.deepEqual(entries.map((e: any) => e.id), ["1"]);
-    assert.equal(requests[0].body.action, "dotmock_get_llm_journal");
-    assert.equal(requests[1].url, "/mock-apis/api-1/llm-fixtures/journal?limit=50");
+    assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0].body, { action: "dotmock_get_llm_journal", params: { apiId: "api-1", limit: 50, session: "default" }, context: {} });
   });
 
-  it("reset sends the session to the MCP action", async () => {
+  it("reset sends the session to the sequence-reset action", async () => {
     const result = JSON.parse(await run("llm", "reset", "api-1", "--session", "ci-42"));
     assert.equal(result.reset, true);
+    assert.equal(requests[0].body.action, "dotmock_reset_llm_sequences");
     assert.deepEqual(requests[0].body.params, { apiId: "api-1", session: "ci-42" });
   });
 
-  it("recordings and promote use the recordings routes", async () => {
-    const recordings = JSON.parse(await run("llm", "recordings", "api-1"));
-    assert.equal(recordings[0].provider, "openai");
-    const promoted = JSON.parse(await run("llm", "promote", "api-1", "3", "--name", "Weather"));
+  it("recordings and promote use the recording actions (id or index)", async () => {
+    const recordings = JSON.parse(await run("llm", "recordings", "api-1", "--provider", "openai"));
+    assert.equal(recordings[0].id, "rec_1");
+    assert.deepEqual(requests[0].body.params, { apiId: "api-1", limit: 50, provider: "openai" });
+    const promoted = JSON.parse(await run("llm", "promote", "api-1", "rec_1", "--name", "Weather", "--priority", "5"));
     assert.equal(promoted.name, "Weather");
-    const promoteRest = requests.find((r) => r.url.endsWith("/promote"));
-    assert.deepEqual(promoteRest?.body, { name: "Weather" });
+    assert.deepEqual(requests[1].body.params, { apiId: "api-1", recordingId: "rec_1", name: "Weather", priority: 5 });
   });
 
   it("vcr patches settings through the runtime-settings action", async () => {
