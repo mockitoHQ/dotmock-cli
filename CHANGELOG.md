@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-10-02
+
+### Changed
+
+- Destructive commands (`delete api`, `config publish|rollback`) require `--yes`
+  (or `--force`) when there is no TTY, in CI, or with `--json`; `--json` alone is
+  no longer treated as consent.
 
 ### Fixed
 
