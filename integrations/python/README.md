@@ -5,7 +5,8 @@ its own `X-Dotmock-Session`, so sequence counters and the request journal are
 isolated per test, and tests can assert which fixture answered each request.
 
 ```sh
-pip install pytest-dotmock
+# Not on PyPI yet: install from the repository.
+pip install "git+https://github.com/mockitoHQ/dotmock-cli#subdirectory=integrations/python"
 npx @dotmock/cli init --llm && npx @dotmock/cli login && npx @dotmock/cli config apply
 export DOTMOCK_API_KEY=mck_...   # or rely on the key saved by `dotmock login`
 export DOTMOCK_API=assistant     # API id or subdomain
@@ -25,6 +26,11 @@ def test_greeting(dotmock):
 ```
 
 Tests that use the fixtures are skipped when no API key is available.
+
+> `pytest-dotmock` is not published to PyPI yet. Pin a tag or commit for
+> reproducible CI, e.g. `...dotmock-cli@v0.3.0#subdirectory=integrations/python`.
+> Once released (see `.github/workflows/publish-pytest-dotmock.yml`),
+> `pip install pytest-dotmock` will work.
 
 ## Fixtures
 

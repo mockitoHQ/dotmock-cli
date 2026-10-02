@@ -1,17 +1,35 @@
 import { executeAction } from "../actions.js";
+import { getBaseUrl } from "../config.js";
 import { resolveApiId, type ActionCaller } from "./api-ref.js";
 
 /**
- * Resolve the hosted mock base URL from a `dotmock_get_api` payload:
- * `_dx.baseUrl`, then baseUrl/fullUrl/url/mockUrl (the backend builds these,
- * including team-scoped hosts), then `https://{subdomain}.mock.rest`.
+ * Collapse a team token the URL builder appended twice
+ * (`assistant-x1y2-t1a2b3c4-t1a2b3c4.mock.rest` -> `assistant-x1y2-t1a2b3c4.mock.rest`).
  */
-export function resolveMockBaseUrl(api: unknown): string {
+export function collapseDoubledTeamSuffix(url: string): string {
+  return url.replace(/^(https?:\/\/[a-z0-9-]*?)(-t[0-9a-f]{8}|-[a-z0-9]{6,10})\2(?=[.:/]|$)/i, "$1$2");
+}
+
+function isLocalBackend(): boolean {
+  try {
+    return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(new URL(getBaseUrl()).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve the hosted mock base URL from a `dotmock_get_api` payload. The
+ * backend's canonical fields win: `localUrl` when the CLI talks to a local
+ * stack, then fullUrl/_dx.baseUrl/baseUrl/url/mockUrl, then
+ * `https://{subdomain}.mock.rest`. A doubled team suffix is collapsed.
+ */
+export function resolveMockBaseUrl(api: unknown, local = isLocalBackend()): string {
   const record = (api && typeof api === "object" ? api : {}) as Record<string, unknown>;
   const dx = record._dx as Record<string, unknown> | undefined;
-  const candidates = [dx?.baseUrl, record.baseUrl, record.fullUrl, record.url, record.mockUrl];
+  const candidates = [local ? record.localUrl : undefined, record.fullUrl, dx?.baseUrl, record.baseUrl, record.url, record.mockUrl];
   for (const value of candidates) {
-    if (typeof value === "string" && value.trim()) return value.trim().replace(/\/+$/, "");
+    if (typeof value === "string" && value.trim()) return collapseDoubledTeamSuffix(value.trim().replace(/\/+$/, ""));
   }
   if (typeof record.subdomain === "string" && record.subdomain) {
     return `https://${record.subdomain}.mock.rest`;

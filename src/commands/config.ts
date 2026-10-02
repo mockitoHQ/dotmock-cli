@@ -1,28 +1,26 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createInterface } from "node:readline";
 import { Command } from "commander";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { api, ApiError } from "../client.js";
+import { ApiError } from "../client.js";
+import { executeAction } from "../actions.js";
 import { error, info, isJsonMode, json, success, table } from "../output.js";
 import { asRecord, readStructuredValue } from "../structured-input.js";
-import { findApi, isApiId } from "../lib/api-ref.js";
+import { ApiNotFoundError, findApi, isApiId, suggestApis } from "../lib/api-ref.js";
+import { confirmDestructive } from "../lib/confirm.js";
 import {
   createLlmApi,
+  executeLlmPlan,
   isLlmDefinition,
-  syncLlmDefinition,
+  LlmApplyError,
+  planLlmSync,
   validateLlmDefinition,
   type LlmDefinition,
 } from "../lib/llm-definition.js";
 
-interface ActionResult<T = unknown> { success: boolean; result?: T; data?: T; message?: string; error?: string }
 interface DefinitionEnvelope { definition: Record<string, unknown>; etag: string; published?: { revision: number } | null }
 
-async function execute<T>(action: string, params: Record<string, unknown>): Promise<T> {
-  const response = await api<ActionResult<T>>("POST", "/agent/actions/execute", { action, params, context: {} });
-  if (!response.success) throw new Error(response.message || response.error || `${action} failed`);
-  return (response.result ?? response.data) as T;
-}
+const execute = executeAction;
 
 function loadDefinition(file: string): Record<string, unknown> {
   const path = resolve(file);
@@ -55,14 +53,30 @@ const pull = new Command("pull")
   });
 
 const validate = new Command("validate")
-  .description("Validate the shared draft or a local definition")
-  .requiredOption("--api <id>", "API ID")
-  .option("-f, --file <file>", "Local YAML or JSON definition")
+  .description("Validate a local definition (default dotmock.yaml) or, with --api and no file, the shared draft")
+  .option("--api <id>", "API ID (defaults to the file's id; not needed for kind: llm)")
+  .option("-f, --file <file>", "Local YAML or JSON definition (default: dotmock.yaml)")
   .action(async ({ api: apiId, file }) => {
     try {
-      const result = file
-        ? await execute<any>("dotmock_validate_definition", { apiId, definition: loadDefinition(file) })
-        : await execute<any>("dotmock_validate_definition", { apiId });
+      const path = file ?? (apiId && !existsSync(resolve("dotmock.yaml")) ? undefined : "dotmock.yaml");
+      const definition = path ? loadDefinition(path) : undefined;
+      if (definition && isLlmDefinition(definition)) {
+        // LLM definitions are validated locally; the backend re-validates each fixture on apply.
+        const issues = validateLlmDefinition(definition);
+        const result = { valid: !issues.some((issue) => issue.severity === "error"), issues };
+        if (isJsonMode()) json(result);
+        else {
+          for (const issue of issues) info(`${issue.severity.toUpperCase()} ${issue.path}: ${issue.message}`);
+          result.valid ? success(`${path} is valid`) : error(`${path} has ${issues.filter((i) => i.severity === "error").length} error(s)`);
+        }
+        if (!result.valid) process.exitCode = 1;
+        return;
+      }
+      const target = apiId ?? (typeof definition?.id === "string" ? definition.id : undefined);
+      if (!target) throw new Error("--api is required for non-LLM definitions without an id.");
+      const result = definition
+        ? await execute<any>("dotmock_validate_definition", { apiId: target, definition })
+        : await execute<any>("dotmock_validate_definition", { apiId: target });
       if (isJsonMode()) json(result);
       else if (result.valid) success("Definition is valid");
       else { error(`Definition has ${result.issues?.filter((issue: any) => issue.severity === "error").length || 0} error(s)`); for (const issue of result.issues || []) info(`${issue.severity.toUpperCase()} ${issue.path}: ${issue.message}`); process.exitCode = 1; }
@@ -83,53 +97,102 @@ function assertValidLlm(definition: LlmDefinition, file: string): void {
   if (errors.length) throw new Error(`Invalid ${file}:\n${errors.map((issue) => `  ${issue.path}: ${issue.message}`).join("\n")}`);
 }
 
-/** Existing hosted API for an LLM definition: --api, then `id`, then `subdomain`/`name`. */
-async function findLlmApi(definition: LlmDefinition, explicit?: string): Promise<string | undefined> {
+/**
+ * Existing hosted API for an LLM definition: --api, then `id`, then
+ * `subdomain`/`name`. An explicit --api or a recorded `id` that no longer
+ * exists is an error (with suggestions) rather than a silent re-create.
+ */
+async function findLlmApi(definition: LlmDefinition, explicit?: string): Promise<Record<string, unknown> | undefined> {
   const refs = [explicit, definition.id, definition.subdomain, definition.name].filter((ref): ref is string => typeof ref === "string" && !!ref);
   if (!refs.length) return undefined;
-  if (explicit && isApiId(explicit)) return explicit;
   const apis = await execute<unknown>("dotmock_list_apis", {});
-  for (const ref of explicit ? [explicit] : refs) {
-    const hit = findApi(apis, ref);
-    if (typeof hit?.id === "string") return hit.id;
+  const pinned = explicit ?? (typeof definition.id === "string" && definition.id ? definition.id : undefined);
+  if (pinned) {
+    const hit = findApi(apis, pinned);
+    if (hit && typeof hit.id === "string") return hit;
+    if (explicit && isApiId(explicit)) return { id: explicit };
+    throw new ApiNotFoundError(pinned, suggestApis(apis, String(definition.subdomain ?? definition.name ?? pinned)));
   }
-  if (explicit) throw new Error(`API ${explicit} not found.`);
+  for (const ref of refs) {
+    const hit = findApi(apis, ref);
+    if (typeof hit?.id === "string") return hit;
+  }
   return undefined;
 }
 
-/** Record the API id in the definition file so later applies target the same API. */
-function writeBackId(file: string, id: string): void {
+/**
+ * Record the hosted API's real id (and stored subdomain, which the backend
+ * may have adjusted) in the definition so later applies target the same API.
+ * Returns the fields that changed.
+ */
+export function writeBackApiRef(file: string, id: string, subdomain?: string): string[] {
   const path = resolve(file);
   const source = readFileSync(path, "utf8");
+  const changed: string[] = [];
   if (path.endsWith(".json")) {
     const value = JSON.parse(source);
-    writeFileSync(path, `${JSON.stringify({ schemaVersion: value.schemaVersion, kind: value.kind, id, ...value }, null, 2)}\n`);
-    return;
+    if (value.id !== id) changed.push("id");
+    if (subdomain && value.subdomain !== subdomain) changed.push("subdomain");
+    if (!changed.length) return changed;
+    const next = { schemaVersion: value.schemaVersion, kind: value.kind, id, ...value, ...(subdomain ? { subdomain } : {}) };
+    next.id = id;
+    writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`);
+    return changed;
   }
   const lines = source.split("\n");
-  const anchor = lines.findIndex((line) => /^kind:\s*llm\s*$/.test(line));
   const existing = lines.findIndex((line) => /^id:/.test(line));
-  if (existing >= 0) lines[existing] = `id: ${id}`;
-  else lines.splice(anchor >= 0 ? anchor + 1 : lines.findIndex((line) => line.trim() && !line.startsWith("#")), 0, `id: ${id}`);
-  writeFileSync(path, lines.join("\n"));
+  if (existing >= 0) {
+    if (lines[existing].replace(/^id:\s*/, "").replace(/["']/g, "").trim() !== id) { lines[existing] = `id: ${id}`; changed.push("id"); }
+  } else {
+    const anchor = lines.findIndex((line) => /^kind:/.test(line));
+    lines.splice(anchor >= 0 ? anchor + 1 : lines.findIndex((line) => line.trim() && !line.startsWith("#")), 0, `id: ${id}`);
+    changed.push("id");
+  }
+  if (subdomain) {
+    const at = lines.findIndex((line) => /^subdomain:/.test(line));
+    const current = at >= 0 ? lines[at].replace(/^subdomain:\s*/, "").replace(/["']/g, "").trim() : undefined;
+    if (current !== subdomain) {
+      if (at >= 0) lines[at] = `subdomain: ${subdomain}`;
+      else lines.splice(lines.findIndex((line) => /^id:/.test(line)) + 1, 0, `subdomain: ${subdomain}`);
+      changed.push("subdomain");
+    }
+  }
+  if (changed.length) writeFileSync(path, lines.join("\n"));
+  return changed;
 }
 
 async function applyLlm(definition: LlmDefinition, file: string, explicitApi: string | undefined, prune: boolean): Promise<void> {
+  // 1. Validate everything locally before any write.
   assertValidLlm(definition, file);
-  let apiId = await findLlmApi(definition, explicitApi);
+  // 2. Plan against the existing API (read-only) so lookups fail before changes.
+  const existing = await findLlmApi(definition, explicitApi);
   let created: Record<string, unknown> | undefined;
+  let apiId = existing ? String(existing.id) : undefined;
   if (!apiId) {
     created = await createLlmApi(definition);
     apiId = String(created.id);
-    writeBackId(file, apiId);
   }
-  const result = await syncLlmDefinition(apiId, definition, { prune });
-  const url = created ? String(created.fullUrl ?? created.url ?? "") : "";
-  if (isJsonMode()) { json({ ...result, createdApi: !!created, ...(url ? { url } : {}) }); return; }
-  if (created) success(`Created LLM API ${String(created.name ?? definition.name ?? "")} (${apiId})${url ? ` at ${url}` : ""}; id saved to ${file}.`);
+  const record = created ?? existing ?? {};
+  const storedSubdomain = typeof record.subdomain === "string" && record.subdomain ? record.subdomain : undefined;
+  // Record the id immediately: if a later step fails the next apply targets this API instead of creating another.
+  const written = writeBackApiRef(file, apiId, storedSubdomain);
+  const plan = await planLlmSync(apiId, definition, { prune });
+  let result;
+  try {
+    result = await executeLlmPlan(plan);
+  } catch (cause) {
+    if (cause instanceof LlmApplyError && created) {
+      throw new Error(`${cause.message}\nThe API ${apiId} was created and its id saved to ${file}; re-running apply will reuse it.`);
+    }
+    throw cause;
+  }
+  const url = String(record.fullUrl ?? record.url ?? "");
+  if (isJsonMode()) { json({ ...result, createdApi: !!created, ...(url ? { url } : {}), ...(written.length ? { wroteBack: written } : {}) }); return; }
+  if (created) success(`Created LLM API ${String(created.name ?? definition.name ?? "")} (${apiId})${url ? ` at ${url}` : ""}.`);
+  if (written.length) info(`Recorded ${written.map((field) => `${field}: ${field === "id" ? apiId : storedSubdomain}`).join(", ")} in ${file} so later applies target this API.`);
   success(`Applied ${file} to ${apiId}: ${result.created.length} created, ${result.updated.length} updated, ${result.deleted.length} deleted${result.settingsUpdated ? ", settings updated" : ""}.`);
   if (result.extra.length) info(`Kept hosted fixtures not in the file: ${result.extra.join(", ")} (use --prune to delete them).`);
-  info("LLM fixtures are live immediately. Wire your SDK with `dotmock llm connect " + (definition.subdomain ?? apiId) + "`.");
+  info("LLM fixtures are live immediately. Wire your SDK with `dotmock llm connect " + (storedSubdomain ?? definition.subdomain ?? apiId) + "`.");
 }
 
 const plan = new Command("plan")
@@ -141,17 +204,17 @@ const plan = new Command("plan")
       const definition = loadDefinition(file);
       if (isLlmDefinition(definition)) {
         assertValidLlm(definition, file);
-        const existing = await findLlmApi(definition, apiId);
-        const remote = existing ? await execute<unknown>("dotmock_list_llm_fixtures", { apiId: existing }) : [];
-        const remoteNames = new Set((Array.isArray(remote) ? remote : []).map((fixture: any) => String(fixture?.name ?? "")));
-        const localNames = (definition.fixtures ?? []).map((fixture) => String(fixture.name));
+        const found = await findLlmApi(definition, apiId);
+        const existing = found ? String(found.id) : undefined;
+        const planned = existing ? await planLlmSync(existing, definition, { prune: false }) : undefined;
         const result = {
           valid: true,
           apiId: existing ?? null,
           createApi: !existing,
-          create: localNames.filter((name) => !remoteNames.has(name)),
-          update: localNames.filter((name) => remoteNames.has(name)),
-          extra: [...remoteNames].filter((name) => !localNames.includes(name)),
+          create: planned ? planned.creates.map((item) => item.name) : (definition.fixtures ?? []).map((fixture) => String(fixture.name)),
+          update: planned ? planned.updates.map((item) => item.name) : [],
+          extra: planned ? planned.extra : [],
+          settings: !!(planned?.settings ?? definition.protocol?.settings),
         };
         if (isJsonMode()) { json(result); return; }
         if (result.createApi) info(`Will create a new LLM API (${definition.subdomain ?? definition.name ?? "unnamed"}).`);
@@ -261,12 +324,13 @@ const publish = new Command("publish")
   .description("Publish the validated shared draft as a new live revision")
   .requiredOption("--api <id>", "API ID")
   .option("--etag <etag>", "Expected draft ETag (defaults to a fresh pull)")
-  .option("--force", "Confirm publication for non-interactive use")
-  .action(async ({ api: apiId, etag, force }) => {
+  .option("-y, --yes", "Confirm publication for non-interactive use")
+  .option("--force", "Alias for --yes")
+  .action(async ({ api: apiId, etag, force, yes }) => {
     try {
-      if (!(await destructiveConfirmation(`Publish the current draft for ${apiId}?`, force))) return;
+      if (!(await confirmDestructive(`Publish the current draft for ${apiId}?`, force || yes))) { info("Aborted."); return; }
       const expected = etag || (await execute<DefinitionEnvelope>("dotmock_get_definition", { apiId })).etag;
-      const result = await execute<any>("dotmock_publish_definition", { apiId, etag: expected });
+      const result = await execute<any>("dotmock_publish_definition", { apiId, etag: expected, approved: true });
       if (isJsonMode()) json(result);
       else success(`Published revision ${result.revision ?? result.published?.revision ?? "created"}.`);
     } catch (cause) { handleError(cause); }
@@ -277,12 +341,13 @@ const rollback = new Command("rollback")
   .requiredOption("--api <id>", "API ID")
   .requiredOption("--revision <n>", "Historical revision", parsePositiveInteger)
   .option("--etag <etag>", "Expected draft ETag (defaults to a fresh pull)")
-  .option("--force", "Confirm rollback for non-interactive use")
-  .action(async ({ api: apiId, revision, etag, force }) => {
+  .option("-y, --yes", "Confirm rollback for non-interactive use")
+  .option("--force", "Alias for --yes")
+  .action(async ({ api: apiId, revision, etag, force, yes }) => {
     try {
-      if (!(await destructiveConfirmation(`Roll back ${apiId} from revision ${revision}?`, force))) return;
+      if (!(await confirmDestructive(`Roll back ${apiId} from revision ${revision}?`, force || yes))) { info("Aborted."); return; }
       const expected = etag || (await execute<DefinitionEnvelope>("dotmock_get_definition", { apiId })).etag;
-      const result = await execute<any>("dotmock_rollback_definition", { apiId, revision, etag: expected });
+      const result = await execute<any>("dotmock_rollback_definition", { apiId, revision, etag: expected, approved: true });
       if (isJsonMode()) json(result);
       else success(`Rollback published as revision ${result.revision ?? result.published?.revision ?? "created"}.`);
     } catch (cause) { handleError(cause); }
@@ -300,21 +365,6 @@ export const configCommand = new Command("config")
   .addCommand(revisions)
   .addCommand(publish)
   .addCommand(rollback);
-
-async function destructiveConfirmation(message: string, force: boolean): Promise<boolean> {
-  if (force) return true;
-  if (isJsonMode()) {
-    throw new Error("Destructive operations require --force in JSON mode.");
-  }
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  const answer = await new Promise<string>((resolveAnswer) => {
-    rl.question(`${message} (y/N) `, resolveAnswer);
-  });
-  rl.close();
-  if (answer.trim().toLowerCase() === "y") return true;
-  info("Aborted.");
-  return false;
-}
 
 function parseInteger(value: string): number {
   const parsed = Number.parseInt(value, 10);

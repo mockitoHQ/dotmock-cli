@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { executeAction } from "../actions.js";
 import { ApiError } from "../client.js";
 import { error, info, isJsonMode, json, success } from "../output.js";
+import { resolveApiId } from "../lib/api-ref.js";
 import {
   asRecord,
   collect,
@@ -19,11 +20,16 @@ export const testCommand = new Command("test")
   .description(
     "Dry-run a mock without persistence, delivery, proxying, or callouts",
   )
-  .requiredOption("--api <id>", "API ID or slug")
+  .requiredOption("--api <id>", "API ID, subdomain, or name")
   .option("--kind <kind>", "rest, realtime, graphql, soap, grpc, llm, or webhook")
   .option("--method <method>", "REST method", "GET")
   .option("--path <path>", "REST path", "/")
   .option("--event <key>", "Webhook event key")
+  .option("--message <text>", "LLM user message (repeatable; sent in order)", collect, [])
+  .option("--system <text>", "LLM system prompt")
+  .option("--model <model>", "LLM model name")
+  .option("--provider <format>", "LLM request format: openai, responses, anthropic, gemini, bedrock, azure, ollama, cohere, embeddings", "openai")
+  .option("--session <id>", "LLM X-Dotmock-Session (default: an isolated per-run session)")
   .option("--target <json|@file>", "Protocol-specific tester target")
   .option("--request <json|@file>", "Complete request object")
   .option("--query <json|@file>", "REST query object")
@@ -38,8 +44,9 @@ export const testCommand = new Command("test")
   .option("--at <iso-time>", "Virtual time for time-dependent behavior")
   .action(async (opts) => {
     try {
+      const apiId = await resolveApiId(opts.api);
       const api = await executeAction<ApiSummary>("dotmock_get_api", {
-        apiId: opts.api,
+        apiId,
       });
       const kind = String(
         opts.kind || api.mockType || api.apiKind || api.type || "rest",
@@ -56,7 +63,7 @@ export const testCommand = new Command("test")
       const result = await executeAction<Record<string, unknown>>(
         "dotmock_run_mock_test",
         {
-          apiId: opts.api,
+          apiId,
           target,
           request,
           seed: opts.seed,
@@ -72,6 +79,14 @@ export const testCommand = new Command("test")
       success(
         winner?.name ? `Matched ${String(winner.name)}.` : "Dry run completed.",
       );
+      if (Array.isArray(result.matchTrace) && result.matchTrace.length) {
+        info(
+          "Match trace: " +
+            (result.matchTrace as Array<Record<string, unknown>>)
+              .map((step) => `${String(step.name)}=${String(step.result)}`)
+              .join(", "),
+        );
+      }
       info("No persistent state or external side effects were applied.");
       console.log(JSON.stringify(result.response, null, 2));
     } catch (cause) {
@@ -100,11 +115,12 @@ export function buildTarget(
     case "webhook":
       if (!opts.event) throw new Error("Webhook tests require --event.");
       return { kind, eventKey: opts.event };
+    case "llm":
+      return { kind, provider: String(opts.provider || "openai") };
     case "graphql":
     case "realtime":
     case "soap":
     case "grpc":
-    case "llm":
       throw new Error(
         `${kind} tests require --target with the protocol-specific target object.`,
       );
@@ -116,6 +132,7 @@ export function buildTarget(
 function buildRequest(kind: string, opts: Record<string, any>): unknown {
   const body = opts.body ? readStructuredValue(opts.body, "--body") : {};
   if (kind === "webhook") return { data: asRecord(body, "Webhook data") };
+  if (kind === "llm") return buildLlmRequest(opts);
   if (kind !== "rest") return body;
   return {
     method: normalizeRestMethod(opts.method),
@@ -125,6 +142,24 @@ function buildRequest(kind: string, opts: Record<string, any>): unknown {
       : {},
     headers: parseHeaders(opts.header || []),
     body,
+  };
+}
+
+export function buildLlmRequest(opts: Record<string, any>): Record<string, unknown> {
+  const messages = [
+    ...(opts.system ? [{ role: "system", content: String(opts.system) }] : []),
+    ...((opts.message as string[] | undefined) ?? []).map((content) => ({ role: "user", content })),
+  ];
+  const provider = String(opts.provider || "openai");
+  if (!messages.some((m) => m.role === "user") && provider !== "embeddings" && !opts.body) {
+    throw new Error('LLM tests require --message "..." (or --request with messages).');
+  }
+  return {
+    provider,
+    messages,
+    ...(opts.model ? { model: String(opts.model) } : {}),
+    ...(opts.session ? { session: String(opts.session) } : {}),
+    ...(opts.body ? { body: asRecord(readStructuredValue(opts.body, "--body"), "LLM body") } : {}),
   };
 }
 

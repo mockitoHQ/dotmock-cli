@@ -75,7 +75,7 @@ const targets = new Command("targets")
   .action(async (options) => {
     let result: any;
     if (options.from) result = await executeAction("dotmock_upsert_realtime_target", { apiId: options.api, target: readStructuredFile(options.from), etag: options.etag });
-    else if (options.delete) result = await executeAction("dotmock_delete_realtime_target", { apiId: options.api, targetId: options.delete, etag: options.etag });
+    else if (options.delete) result = await executeAction("dotmock_delete_realtime_target", { apiId: options.api, targetId: options.delete, etag: options.etag, approved: true });
     else result = await executeAction<any>("dotmock_list_realtime_targets", { apiId: options.api });
     if (isJsonMode() || options.from || options.delete) json(result);
     else table(["Transport", "Name", "Path / channel", "ID"], (result.targets || []).map((item: any) => [item.transport, item.name, item.path || item.channelId || "-", item.id]));
@@ -91,7 +91,7 @@ const scenarios = new Command("scenarios")
   .action(async (options) => {
     let result: any;
     if (options.from) result = await executeAction("dotmock_upsert_realtime_scenario", { apiId: options.api, scenario: readStructuredFile(options.from), etag: options.etag });
-    else if (options.delete) result = await executeAction("dotmock_delete_realtime_scenario", { apiId: options.api, scenarioId: options.delete, etag: options.etag });
+    else if (options.delete) result = await executeAction("dotmock_delete_realtime_scenario", { apiId: options.api, scenarioId: options.delete, etag: options.etag, approved: true });
     else result = await executeAction<any>("dotmock_list_realtime_scenarios", { apiId: options.api, targetId: options.target });
     if (isJsonMode() || options.from || options.delete) json(result);
     else table(["Trigger", "Name", "Target", "Enabled", "ID"], (result.scenarios || []).map((item: any) => [item.trigger?.type, item.name, item.targetId, item.enabled ? "yes" : "no", item.id]));
@@ -207,7 +207,7 @@ const importContract = new Command("import")
     const definition = structuredClone(current.definition);
     definition.protocol = { ...definition.protocol, asyncapi: readStructuredFile(options.from) };
     let saved = await executeAction<any>("dotmock_update_definition_draft", { apiId: options.api, definition, etag: current.etag });
-    if (options.publish) saved = await executeAction("dotmock_publish_definition", { apiId: options.api, etag: saved.etag });
+    if (options.publish) saved = await executeAction("dotmock_publish_definition", { apiId: options.api, etag: saved.etag, approved: true });
     if (isJsonMode()) json(saved); else success(options.publish ? "AsyncAPI imported and published." : "AsyncAPI imported into the draft.");
   });
 

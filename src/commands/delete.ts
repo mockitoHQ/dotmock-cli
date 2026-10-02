@@ -1,106 +1,56 @@
 import { Command } from 'commander';
-import { createInterface } from 'node:readline';
-import { api, ApiError } from '../client.js';
-import { success, error, json, isJsonMode } from '../output.js';
-import { executeAction as execute } from '../actions.js';
+import { ApiError } from '../client.js';
+import { success, error, info, json, isJsonMode } from '../output.js';
+import { executeAction } from '../actions.js';
+import { resolveApiId } from '../lib/api-ref.js';
+import { confirmDestructive } from '../lib/confirm.js';
 
-interface ActionResult {
-  success: boolean;
-  data?: Record<string, unknown>;
-  error?: string;
-}
-
-async function executeAction(
-  action: string,
-  params: Record<string, unknown>,
-): Promise<ActionResult> {
-  return api<ActionResult>('POST', '/agent/actions/execute', {
-    action,
-    params,
-    context: {},
-  });
-}
-
-async function confirm(message: string): Promise<boolean> {
-  const rl = createInterface({
-    input: process.stdin,
-    output: process.stderr,
-  });
-
-  return new Promise((resolve) => {
-    rl.question(`${message} (y/N) `, (answer) => {
-      rl.close();
-      resolve(answer.trim().toLowerCase() === 'y');
-    });
-  });
+function fail(err: unknown, what: string): void {
+  if (err instanceof ApiError) error(`Failed to delete ${what} (HTTP ${err.status}): ${err.message}`);
+  else error(`Failed to delete ${what}: ${(err as Error).message}`);
+  process.exitCode = 1;
 }
 
 const deleteApiCommand = new Command('api')
   .description('Delete a mock API')
-  .argument('<slug>', 'API slug')
-  .option('--force', 'Skip confirmation prompt')
-  .action(async (slug: string, opts) => {
+  .argument('<api>', 'API ID, subdomain, or name')
+  .option('-y, --yes', 'Skip the confirmation prompt (required in CI / non-interactive shells)')
+  .option('--force', 'Alias for --yes')
+  .action(async (ref: string, opts) => {
     try {
-      if (!opts.force && !isJsonMode()) {
-        const ok = await confirm(
-          `Are you sure you want to delete API "${slug}"? This cannot be undone.`,
-        );
-        if (!ok) {
-          error('Aborted.');
-          return;
-        }
-      }
-
-      const result = await executeAction('dotmock_delete_api', {
-        apiId: slug,
-      });
-
-      if (!result.success) {
-        error(result.error || 'Failed to delete API.');
-        process.exitCode = 1;
+      const apiId = await resolveApiId(ref);
+      const label = apiId === ref ? ref : `${ref} (${apiId})`;
+      if (!(await confirmDestructive(`Delete API "${label}"? This cannot be undone.`, opts.yes || opts.force))) {
+        info('Aborted.');
         return;
       }
-
+      // The explicit command plus confirmation is the user's consent.
+      await executeAction('dotmock_delete_api', { apiId, approved: true });
       if (isJsonMode()) {
-        json({ deleted: true, slug });
+        json({ deleted: true, apiId, ref });
         return;
       }
-
-      success(`API "${slug}" deleted.`);
+      success(`API "${label}" deleted.`);
     } catch (err) {
-      if (err instanceof ApiError) {
-        error(`Failed to delete API (HTTP ${err.status}): ${err.message}`);
-      } else {
-        error(`Failed to delete API: ${(err as Error).message}`);
-      }
-      process.exitCode = 1;
+      fail(err, 'API');
     }
   });
 
 const deleteFixtureCommand = new Command('fixture')
   .description('Delete an LLM fixture')
-  .requiredOption('--api <slug>', 'API slug')
+  .requiredOption('--api <api>', 'API ID, subdomain, or name')
   .requiredOption('--id <id>', 'Fixture ID')
   .action(async (opts) => {
     try {
-      await execute('dotmock_delete_llm_fixture', {
-        apiId: opts.api,
-        fixtureId: opts.id,
-      });
-
+      const apiId = await resolveApiId(opts.api);
+      await executeAction('dotmock_delete_llm_fixture', { apiId, fixtureId: opts.id, approved: true });
       if (isJsonMode()) {
-        json({ deleted: true, api: opts.api, id: opts.id });
+        json({ deleted: true, api: apiId, id: opts.id });
         return;
       }
-
       success(`Fixture "${opts.id}" deleted.`);
     } catch (err) {
-      if (err instanceof ApiError) {
-        error(`Failed to delete fixture (HTTP ${err.status}): ${err.message}`);
-      } else {
-        error(`Failed to delete fixture: ${(err as Error).message}`);
-      }
-      process.exitCode = 1;
+      fail(err, 'fixture');
     }
   });
 

@@ -35,6 +35,14 @@ export function promoteRecording(
   return executeAction("dotmock_promote_llm_recording", { apiId, recordingId, ...overrides });
 }
 
+/**
+ * Settings updates are an interactive-approval tool in the backend. A CLI
+ * invocation is an explicit user command, so it carries `approved: true`.
+ */
 export function updateLlmSettings(apiId: string, settings: Record<string, unknown>): Promise<unknown> {
-  return executeAction("dotmock_update_llm_runtime_settings", { apiId, settings });
+  return executeAction("dotmock_update_llm_runtime_settings", { apiId, settings, approved: true });
+}
+
+export function getLlmSettings(apiId: string): Promise<unknown> {
+  return executeAction("dotmock_get_llm_runtime_settings", { apiId });
 }

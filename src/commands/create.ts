@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { api, ApiError } from "../client.js";
 import { success, error, info, json, isJsonMode } from "../output.js";
@@ -9,6 +9,9 @@ import { createEndpointCommand } from "./create-endpoint.js";
 import { asRecord, readStructuredFile } from "../structured-input.js";
 import { executeAction as execute } from "../actions.js";
 import { contractInput } from "./grpc.js";
+import { detectImportFormat, toImportSpec } from "../lib/import-formats.js";
+
+const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
 
 interface ActionResult {
   success: boolean;
@@ -38,7 +41,7 @@ const createApiCommand = new Command("api")
   )
   .option(
     "--from <file>",
-    "Create from OpenAPI, TypeScript, .proto source, or descriptor set",
+    "Create from OpenAPI/Swagger, AsyncAPI, Postman collection, HAR, TypeScript, .proto source, or descriptor set",
   )
   .option("--name <name>", "API name")
   .option("--prompt <text>", "Generate API from a text prompt using AI")
@@ -79,6 +82,8 @@ const createApiCommand = new Command("api")
             );
         } else {
           const ext = extname(opts.from).toLowerCase();
+          if (statSync(opts.from).size > MAX_IMPORT_BYTES)
+            throw new Error(`${opts.from} is larger than 25 MB; trim it (e.g. filter a HAR to API calls) and retry.`);
           const code = readFileSync(opts.from, "utf-8");
 
           if (ext === ".ts" || ext === ".tsx") {
@@ -106,29 +111,61 @@ const createApiCommand = new Command("api")
               specificationType: specificationTypeForKind(apiType),
             });
           } else {
-            info(apiType === "realtime" ? "Parsing AsyncAPI spec..." : "Parsing OpenAPI spec...");
-            let openApiSpec: unknown;
+            let parsed: unknown;
             try {
-              openApiSpec =
+              parsed =
                 ext === ".yaml" || ext === ".yml"
                   ? parseYaml(code)
                   : JSON.parse(code);
             } catch {
               error(
-                "Failed to parse file as JSON or YAML. Ensure it is a valid OpenAPI spec.",
+                "Failed to parse file as JSON or YAML. Expected OpenAPI/Swagger, AsyncAPI, a Postman collection, or a HAR file.",
               );
               process.exitCode = 1;
               return;
             }
-            result = await executeAction("dotmock_create_api", {
-              name: opts.name || "Imported API",
-              subdomain: opts.subdomain || slugify(opts.name || "imported-api"),
-              mockType: apiType,
-              ...(apiType === "realtime"
-                ? { asyncApiSpec: openApiSpec }
-                : { openApiSpec }),
-              specificationType: specificationTypeForKind(apiType),
-            });
+            const format = detectImportFormat(parsed, opts.from);
+            const isSwagger2 = format === "openapi" && typeof (parsed as Record<string, unknown>).swagger === "string";
+            // Postman, HAR, and Swagger 2.0 are converted by the backend importer
+            // (schema inference, examples); older backends fall back to the
+            // client-side converter.
+            const serverImport = apiType === "rest" && (format === "postman" || format === "har" || isSwagger2);
+            const imported = serverImport
+              ? await executeAction("dotmock_import_api", {
+                  content: parsed,
+                  format: "auto",
+                  ...(opts.name ? { name: opts.name } : {}),
+                  ...(opts.subdomain ? { subdomain: opts.subdomain } : {}),
+                })
+              : undefined;
+            if (imported?.success) {
+              const details = (actionData(imported).import ?? {}) as Record<string, any>;
+              info(`Imported ${String(details.format ?? format)} (${String(details.summary?.endpointCount ?? "?")} operations).`);
+              for (const warning of (details.warnings as unknown[] | undefined) ?? []) info(`WARNING ${String(warning)}`);
+              result = imported;
+            } else {
+              if (imported && !/UNCLASSIFIED_ACTION|no security policy|unexpected action/i.test(String(imported.error ?? imported.message ?? ""))) {
+                throw new Error(String(imported.message || imported.error || "Import failed."));
+              }
+              const { spec: openApiSpec } = toImportSpec(parsed, opts.from);
+              if (format === "postman" || format === "har") {
+                const count = Object.values(openApiSpec.paths ?? {}).reduce<number>((total, item) => total + Object.keys(item as object).length, 0);
+                if (!count) throw new Error(`${opts.from}: no API requests found in the ${format === "har" ? "HAR file" : "Postman collection"}.`);
+                info(`Converted ${format === "har" ? "HAR" : "Postman collection"} to OpenAPI (${count} operation${count === 1 ? "" : "s"} with recorded examples).`);
+              } else {
+                info(format === "asyncapi" ? "Parsing AsyncAPI spec..." : "Parsing OpenAPI spec...");
+              }
+              const importedName = opts.name || String(openApiSpec.info?.title || "Imported API");
+              result = await executeAction("dotmock_create_api", {
+                name: importedName,
+                subdomain: opts.subdomain || slugify(importedName),
+                mockType: apiType,
+                ...(apiType === "realtime"
+                  ? { asyncApiSpec: openApiSpec }
+                  : { openApiSpec }),
+                specificationType: specificationTypeForKind(apiType),
+              });
+            }
           }
         }
       } else if (opts.prompt) {

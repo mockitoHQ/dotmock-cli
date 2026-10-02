@@ -94,7 +94,7 @@ const test = new Command("test")
   .option("--live", "Persist state and capture traffic")
   .action(async (options) => {
     const input = readStructuredFile(options.from);
-    const result = await executeAction<any>("dotmock_run_grpc_test", { apiId: options.api, service: options.service, method: options.method, ...(Array.isArray(input) ? { messages: input } : { message: input }), metadata: options.metadata ? readStructuredFile(options.metadata) : {}, mode: options.live ? "live" : "dryRun" });
+    const result = await executeAction<any>("dotmock_run_grpc_test", { apiId: options.api, service: options.service, method: options.method, ...(Array.isArray(input) ? { messages: input } : { message: input }), metadata: options.metadata ? readStructuredFile(options.metadata) : {}, mode: options.live ? "live" : "dryRun", ...(options.live ? { approved: true } : {}) });
     json(result);
   });
 

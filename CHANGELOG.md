@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `dotmock config apply` on the `dotmock init --llm` file failed with
+  "update_llm_runtime_settings requires explicit confirmation". Settings updates,
+  prune deletes, `llm vcr`, `delete api|fixture`, `config publish|rollback`,
+  realtime/webhook deletes, and live SOAP/gRPC tests now send `approved: true`
+  (the explicit CLI command is the consent).
+- `config apply` validates and plans before writing, applies settings before
+  fixtures, rolls back on failure with a clear partial-state message, and writes
+  the stored id and subdomain back to the file.
+- `dotmock status` no longer crashes on the current plan shape
+  (`usageBalanceMicrodollars`, `activeWorkspaces`, ...) or missing fields.
+- API references (id, subdomain, requested subdomain prefix, or name) are
+  resolved locally; unknown references fail with suggestions instead of being
+  sent to the backend.
+- Mock URLs prefer the backend's canonical `fullUrl` (`localUrl` against a local
+  stack) and collapse a doubled team suffix.
+
+### Added
+
+- `dotmock create api --from` detects Postman collections and HAR files and
+  converts them to OpenAPI with recorded examples.
+- `dotmock test --kind llm --message ... [--provider --model --system --session]`.
+- `--yes` on `delete api`, `config publish`, and `config rollback`; without it
+  they fail fast in CI, `--json`, or non-TTY shells instead of waiting on stdin.
+  `--json` no longer implies confirmation for `delete api`.
+- `dotmock config validate` defaults to `dotmock.yaml` and validates `kind: llm`
+  locally without `--api`.
+- A PyPI trusted-publishing workflow for `pytest-dotmock` (not yet released).
+
 ## 0.3.0
 
 DotMock runs as a hosted service only; the CLI no longer runs or manages a mock

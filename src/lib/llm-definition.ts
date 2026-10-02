@@ -158,44 +158,133 @@ export interface LlmSyncResult {
   settingsUpdated: boolean;
 }
 
-/** Push fixtures (matched by name) and settings to a hosted LLM API. */
-export async function syncLlmDefinition(apiId: string, definition: LlmDefinition, options: { prune?: boolean } = {}): Promise<LlmSyncResult> {
+/** Everything `config apply` will change, computed before any write. */
+export interface LlmSyncPlan {
+  apiId: string;
+  creates: Array<{ name: string; body: Record<string, unknown> }>;
+  updates: Array<{ name: string; id: string; body: Record<string, unknown>; previous: Record<string, unknown> }>;
+  deletes: Array<{ name: string; id: string; previous: Record<string, unknown> }>;
+  extra: string[];
+  settings?: Record<string, unknown>;
+}
+
+/** A failed apply, with what was changed and whether it was rolled back. */
+export class LlmApplyError extends Error {
+  constructor(
+    message: string,
+    public readonly original: unknown,
+    public readonly applied: string[],
+    public readonly rolledBack: string[],
+    public readonly rollbackFailures: string[],
+  ) {
+    super(message);
+    this.name = "LlmApplyError";
+  }
+}
+
+const SERVER_FIELDS = ["id", "createdAt", "updatedAt", "createdBy", "updatedBy", "warnings"];
+
+function restorableBody(fixture: Record<string, unknown>): Record<string, unknown> {
+  const body = { ...fixture };
+  for (const field of SERVER_FIELDS) delete body[field];
+  return body;
+}
+
+/** Compute the fixture/settings changes for a hosted LLM API (read-only). */
+export async function planLlmSync(apiId: string, definition: LlmDefinition, options: { prune?: boolean } = {}): Promise<LlmSyncPlan> {
   const remote = asList(await executeAction("dotmock_list_llm_fixtures", { apiId }), "fixtures");
   const byName = new Map(remote.map((fixture) => [String(fixture.name ?? ""), fixture]));
-  const result: LlmSyncResult = { apiId, created: [], updated: [], deleted: [], extra: [], settingsUpdated: false };
+  const plan: LlmSyncPlan = { apiId, creates: [], updates: [], deletes: [], extra: [] };
   const wanted = new Set<string>();
-
   for (const fixture of definition.fixtures ?? []) {
     const name = String(fixture.name);
     wanted.add(name);
     const body = toFixtureBody(fixture);
     const existing = byName.get(name);
-    if (existing?.id) {
-      await executeAction("dotmock_update_llm_fixture", { apiId, fixtureId: existing.id, ...body });
-      result.updated.push(name);
-    } else {
-      await executeAction("dotmock_create_llm_fixture", { apiId, ...body });
-      result.created.push(name);
-    }
+    if (existing?.id) plan.updates.push({ name, id: String(existing.id), body, previous: existing });
+    else plan.creates.push({ name, body });
   }
-
   for (const fixture of remote) {
     const name = String(fixture.name ?? "");
     if (wanted.has(name)) continue;
-    if (options.prune && fixture.id) {
-      await executeAction("dotmock_delete_llm_fixture", { apiId, fixtureId: fixture.id });
-      result.deleted.push(name);
-    } else {
-      result.extra.push(name);
-    }
+    if (options.prune && fixture.id) plan.deletes.push({ name, id: String(fixture.id), previous: fixture });
+    else plan.extra.push(name);
   }
-
   const settings = llmSettingsOf(definition);
-  if (settings && Object.keys(settings).length) {
-    await executeAction("dotmock_update_llm_runtime_settings", { apiId, settings });
-    result.settingsUpdated = true;
+  if (settings && Object.keys(settings).length) plan.settings = settings;
+  return plan;
+}
+
+/**
+ * Apply a plan. Settings go first (the backend validates them, e.g. VCR
+ * upstream SSRF checks, so a bad file fails before any fixture changes), then
+ * fixtures. If a write fails, every change made so far is reverted best-effort
+ * and an LlmApplyError describes the resulting state.
+ *
+ * Interactive-approval tools (settings, deletes) carry `approved: true`: the
+ * user's `dotmock config apply` invocation is the consent.
+ */
+export async function executeLlmPlan(plan: LlmSyncPlan): Promise<LlmSyncResult> {
+  const { apiId } = plan;
+  const result: LlmSyncResult = { apiId, created: [], updated: [], deleted: [], extra: [...plan.extra], settingsUpdated: false };
+  const undo: Array<{ label: string; run: () => Promise<unknown> }> = [];
+  const applied: string[] = [];
+  try {
+    if (plan.settings) {
+      let previous: Record<string, unknown> | undefined;
+      try {
+        const current = await executeAction<Record<string, unknown>>("dotmock_get_llm_runtime_settings", { apiId });
+        if (current && typeof current === "object") previous = JSON.parse(JSON.stringify(current));
+      } catch { /* snapshot is best-effort */ }
+      await executeAction("dotmock_update_llm_runtime_settings", { apiId, settings: plan.settings, approved: true });
+      result.settingsUpdated = true;
+      applied.push("settings");
+      if (previous && Object.keys(previous).length) {
+        undo.push({ label: "settings", run: () => executeAction("dotmock_update_llm_runtime_settings", { apiId, settings: previous, approved: true }) });
+      }
+    }
+    for (const { name, body, id, previous } of plan.updates) {
+      await executeAction("dotmock_update_llm_fixture", { apiId, fixtureId: id, ...body });
+      result.updated.push(name);
+      applied.push(`updated fixture ${name}`);
+      // Updates deep-merge server-side; null out top-level fields this apply introduced.
+      const cleared = Object.fromEntries(Object.keys(body).filter((key) => !(key in previous)).map((key) => [key, null]));
+      undo.push({ label: `fixture ${name}`, run: () => executeAction("dotmock_update_llm_fixture", { apiId, fixtureId: id, ...cleared, ...restorableBody(previous) }) });
+    }
+    for (const { name, body } of plan.creates) {
+      const created = await executeAction<Record<string, unknown>>("dotmock_create_llm_fixture", { apiId, ...body });
+      result.created.push(name);
+      applied.push(`created fixture ${name}`);
+      const createdId = created && typeof created === "object" ? (created.id ?? (created.fixture as Record<string, unknown> | undefined)?.id) : undefined;
+      if (createdId) undo.push({ label: `fixture ${name}`, run: () => executeAction("dotmock_delete_llm_fixture", { apiId, fixtureId: createdId, approved: true }) });
+    }
+    for (const { name, id, previous } of plan.deletes) {
+      await executeAction("dotmock_delete_llm_fixture", { apiId, fixtureId: id, approved: true });
+      result.deleted.push(name);
+      applied.push(`deleted fixture ${name}`);
+      undo.push({ label: `fixture ${name}`, run: () => executeAction("dotmock_create_llm_fixture", { apiId, ...restorableBody(previous) }) });
+    }
+  } catch (cause) {
+    const rolledBack: string[] = [];
+    const failures: string[] = [];
+    for (const step of undo.reverse()) {
+      try { await step.run(); rolledBack.push(step.label); } catch (error) { failures.push(`${step.label}: ${(error as Error).message}`); }
+    }
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    const state = !applied.length
+      ? "Nothing was changed."
+      : failures.length
+        ? `PARTIAL STATE: applied [${applied.join(", ")}]; could not roll back [${failures.join("; ")}]. Fix the error and re-run \`dotmock config apply\` (it is idempotent).`
+        : `Rolled back ${rolledBack.length} change(s); the hosted API is as it was before this apply` +
+          (rolledBack.includes("settings") ? " (settings were re-applied from a snapshot; new keys may remain)." : ".");
+    throw new LlmApplyError(`Apply failed: ${reason}\n${state}`, cause, applied, rolledBack, failures);
   }
   return result;
+}
+
+/** Push fixtures (matched by name) and settings to a hosted LLM API. */
+export async function syncLlmDefinition(apiId: string, definition: LlmDefinition, options: { prune?: boolean } = {}): Promise<LlmSyncResult> {
+  return executeLlmPlan(await planLlmSync(apiId, definition, options));
 }
 
 /** Create the hosted LLM API described by a definition; returns the API record. */

@@ -90,7 +90,8 @@ it("greets", async () => {
 `getJournal()` and `expectFixtureMatched()` call the hosted API for that session
 and only see requests made since the last reset. The module is ESM and works
 with vitest, jest (ESM mode), and `node:test`. See `examples/vitest/`. For
-Python, see `integrations/python/` (`pytest-dotmock`).
+Python, see `integrations/python/` (`pytest-dotmock`, not on PyPI yet:
+`pip install "git+https://github.com/mockitoHQ/dotmock-cli#subdirectory=integrations/python"`).
 
 ## GitHub Actions
 
@@ -111,9 +112,12 @@ post step summarizes that session's journal. Details: `action/README.md`.
 ```sh
 dotmock login                                  # browser approval, stores ~/.dotmock/config.json
 dotmock --json list apis
-dotmock create api --name "Orders" --from openapi.yaml
+dotmock create api --name "Orders" --from openapi.yaml   # also Postman collections and .har files
 dotmock mock url <api>                         # base URL an app or test should call
 dotmock --json test --api "$API_ID" --method GET --path /orders
+dotmock test --api assistant --kind llm --message hello      # LLM dry-run: matched fixture + trace
+dotmock config validate                        # validates ./dotmock.yaml (no --api for kind: llm)
+dotmock delete api orders --yes                # destructive commands need --yes in CI / non-TTY
 dotmock captures assert --api <api> --method POST --path /v1/orders --body-contains sku_123
 dotmock webhook listen --api "$WEBHOOK_API_ID" --forward-to http://localhost:3000/webhooks
 dotmock skill install --scope project --agent auto

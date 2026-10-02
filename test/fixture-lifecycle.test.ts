@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
+const API_UUID = "11111111-2222-4333-8444-555555555555";
 
 interface ActionCall {
   action: string;
@@ -54,11 +55,11 @@ describe("LLM fixture CLI lifecycle", () => {
   });
 
   it("routes create, list, get, update, and delete through permission-checked actions", async () => {
-    await runCli("create", "fixture", "--api", "api-1", "--name", "Greeting", "--match", "hello", "--response", "Hi");
-    await runCli("list", "fixtures", "--api", "api-1");
-    await runCli("get", "fixture", "--api", "api-1", "--id", "fixture-1");
-    await runCli("update", "fixture", "--api", "api-1", "--id", "fixture-1", "--response", "Hello again");
-    await runCli("delete", "fixture", "--api", "api-1", "--id", "fixture-1");
+    await runCli("create", "fixture", "--api", API_UUID, "--name", "Greeting", "--match", "hello", "--response", "Hi");
+    await runCli("list", "fixtures", "--api", API_UUID);
+    await runCli("get", "fixture", "--api", API_UUID, "--id", "fixture-1");
+    await runCli("update", "fixture", "--api", API_UUID, "--id", "fixture-1", "--response", "Hello again");
+    await runCli("delete", "fixture", "--api", API_UUID, "--id", "fixture-1");
 
     assert.deepEqual(
       calls.map((call) => call.action),
@@ -71,16 +72,18 @@ describe("LLM fixture CLI lifecycle", () => {
       ],
     );
     assert.deepEqual(calls[0].params, {
-      apiId: "api-1",
+      apiId: API_UUID,
       name: "Greeting",
       match: { userMessage: "hello" },
       response: { content: "Hi" },
     });
     assert.deepEqual(calls[3].params, {
-      apiId: "api-1",
+      apiId: API_UUID,
       fixtureId: "fixture-1",
       response: { content: "Hello again" },
     });
+    // Deletes are explicit user commands and carry the backend's approval flag.
+    assert.deepEqual(calls[4].params, { apiId: API_UUID, fixtureId: "fixture-1", approved: true });
   });
 
   async function runCli(...args: string[]): Promise<void> {

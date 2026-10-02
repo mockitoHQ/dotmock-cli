@@ -141,6 +141,7 @@ const test = new Command("test")
       path: options.path,
       headers: options.headers ? readStructuredFile(options.headers) : {},
       mode: options.live ? "live" : "dryRun",
+      ...(options.live ? { approved: true } : {}),
     });
     json(result);
   });

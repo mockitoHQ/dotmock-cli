@@ -71,7 +71,7 @@ describe("dotmock llm CLI against the backend", () => {
         return response.end(JSON.stringify({ message: "unexpected route" }));
       }
       switch (body.action) {
-        case "dotmock_list_apis": return ok([{ id: "api-1", name: "Chat", subdomain: "chat" }]);
+        case "dotmock_list_apis": return ok([{ id: "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f", name: "Chat", subdomain: "chat" }]);
         case "dotmock_get_api": return ok({ id: body.params.apiId, subdomain: "chat", fullUrl: "https://chat-t1a2b3c4.mock.rest" });
         case "dotmock_get_llm_journal": return ok(JOURNAL);
         case "dotmock_list_llm_recordings": return ok([{ index: 0, id: "rec_1", provider: "openai", model: "gpt-4o", status: 200, request: {}, response: {} }]);
@@ -98,29 +98,30 @@ describe("dotmock llm CLI against the backend", () => {
     const entries = JSON.parse(await run("llm", "journal", "chat", "--fixture", "rate-limit", "--session", "default"));
     assert.deepEqual(entries.map((e: any) => e.id), ["1"]);
     assert.deepEqual(requests.map((r) => r.body.action), ["dotmock_list_apis", "dotmock_get_llm_journal"]);
-    assert.deepEqual(requests[1].body, { action: "dotmock_get_llm_journal", params: { apiId: "api-1", limit: 50, session: "default" }, context: {} });
+    assert.deepEqual(requests[1].body, { action: "dotmock_get_llm_journal", params: { apiId: "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f", limit: 50, session: "default" }, context: {} });
   });
 
   it("reset sends the session to the sequence-reset action", async () => {
-    const result = JSON.parse(await run("llm", "reset", "api-1", "--session", "ci-42"));
+    const result = JSON.parse(await run("llm", "reset", "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f", "--session", "ci-42"));
     assert.equal(result.reset, true);
-    assert.equal(requests[1].body.action, "dotmock_reset_llm_sequences");
-    assert.deepEqual(requests[1].body.params, { apiId: "api-1", session: "ci-42" });
+    assert.equal(requests[0].body.action, "dotmock_reset_llm_sequences");
+    assert.deepEqual(requests[0].body.params, { apiId: "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f", session: "ci-42" });
   });
 
   it("recordings and promote use the recording actions (id or index)", async () => {
-    const recordings = JSON.parse(await run("llm", "recordings", "api-1", "--provider", "openai"));
+    const recordings = JSON.parse(await run("llm", "recordings", "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f", "--provider", "openai"));
     assert.equal(recordings[0].id, "rec_1");
-    assert.deepEqual(requests[1].body.params, { apiId: "api-1", limit: 50, provider: "openai" });
-    const promoted = JSON.parse(await run("llm", "promote", "api-1", "rec_1", "--name", "Weather", "--priority", "5"));
+    assert.deepEqual(requests[0].body.params, { apiId: "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f", limit: 50, provider: "openai" });
+    const promoted = JSON.parse(await run("llm", "promote", "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f", "rec_1", "--name", "Weather", "--priority", "5"));
     assert.equal(promoted.name, "Weather");
-    assert.deepEqual(requests[3].body.params, { apiId: "api-1", recordingId: "rec_1", name: "Weather", priority: 5 });
+    assert.deepEqual(requests[1].body.params, { apiId: "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f", recordingId: "rec_1", name: "Weather", priority: 5 });
   });
 
   it("vcr patches settings through the runtime-settings action", async () => {
-    await run("llm", "vcr", "api-1", "--upstream", "openai=https://api.openai.com", "--mode", "record");
-    assert.equal(requests[1].body.action, "dotmock_update_llm_runtime_settings");
-    assert.deepEqual(requests[1].body.params.settings, {
+    await run("llm", "vcr", "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f", "--upstream", "openai=https://api.openai.com", "--mode", "record");
+    assert.equal(requests[0].body.action, "dotmock_update_llm_runtime_settings");
+    assert.equal(requests[0].body.params.approved, true, "settings updates are explicit user commands");
+    assert.deepEqual(requests[0].body.params.settings, {
       vcrUpstreams: { openai: "https://api.openai.com" },
       fallback: { type: "record" },
     });
@@ -128,7 +129,7 @@ describe("dotmock llm CLI against the backend", () => {
 
   it("connect resolves the cloud base URL", async () => {
     const info = JSON.parse(await run("llm", "connect", "chat", "--sdk", "openai-python", "--session", "ci-1"));
-    assert.equal(info.apiId, "api-1");
+    assert.equal(info.apiId, "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f");
     assert.equal(info.env.OPENAI_BASE_URL, "https://chat-t1a2b3c4.mock.rest/v1");
     assert.equal(info.env.DOTMOCK_SESSION, "ci-1");
     assert.deepEqual(Object.keys(info.snippets), ["openai-python"]);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { generatedOpenApiSpec } from "../src/commands/create.js";
-import { buildTarget } from "../src/commands/test.js";
+import { buildLlmRequest, buildTarget } from "../src/commands/test.js";
 import { REST_GENERATORS } from "../src/commands/example.js";
 
 describe("CLI lifecycle contract", () => {
@@ -29,6 +29,19 @@ describe("CLI lifecycle contract", () => {
       kind: "webhook",
       eventKey: "invoice.created",
     });
+  });
+
+  it("builds LLM dry-run targets and requests", () => {
+    assert.deepEqual(buildTarget("llm", { provider: "anthropic" }), { kind: "llm", provider: "anthropic" });
+    assert.deepEqual(
+      buildLlmRequest({ provider: "openai", system: "Be brief.", message: ["hello"], model: "gpt-4o-mini" }),
+      {
+        provider: "openai",
+        messages: [{ role: "system", content: "Be brief." }, { role: "user", content: "hello" }],
+        model: "gpt-4o-mini",
+      },
+    );
+    assert.throws(() => buildLlmRequest({ provider: "openai", message: [] }), /--message/);
   });
 
   it("generates valid custom-method QUERY examples with JSON content", () => {

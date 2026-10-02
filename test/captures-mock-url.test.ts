@@ -17,6 +17,11 @@ describe("mock url resolution (ported from Go CLI)", () => {
     assert.equal(resolveMockBaseUrl({ mockUrl: "https://m.example//" }), "https://m.example");
     assert.equal(resolveMockBaseUrl({ subdomain: "payments" }), "https://payments.mock.rest");
     assert.throws(() => resolveMockBaseUrl({}), /did not include a mock URL/);
+    // Canonical backend fields: localUrl on a local stack, and no doubled team suffix.
+    assert.equal(resolveMockBaseUrl({ fullUrl: "https://a.mock.rest", localUrl: "http://a.localhost:6200" }, true), "http://a.localhost:6200");
+    assert.equal(resolveMockBaseUrl({ fullUrl: "https://a.mock.rest", localUrl: "http://a.localhost:6200" }, false), "https://a.mock.rest");
+    assert.equal(resolveMockBaseUrl({ fullUrl: "http://assistant-x1y2-t1a2b3c4-t1a2b3c4.localhost:7778" }), "http://assistant-x1y2-t1a2b3c4.localhost:7778");
+    assert.equal(resolveMockBaseUrl({ fullUrl: "https://api-v2-v2.mock.rest" }), "https://api-v2-v2.mock.rest");
   });
 });
 
@@ -52,7 +57,9 @@ describe("mock url + captures CLI", () => {
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const { action } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       const result =
-        action === "dotmock_get_api"
+        action === "dotmock_list_apis"
+          ? [{ id: "6f1c0d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f", subdomain: "payments" }]
+          : action === "dotmock_get_api"
           ? { id: "api-1", subdomain: "payments", _dx: { baseUrl: "https://payments.mock.rest" } }
           : { logs: [{ method: "POST", path: "/v1/orders", body: '{"sku":"sku_123"}' }] };
       response.writeHead(200, { "Content-Type": "application/json" });

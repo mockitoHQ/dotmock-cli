@@ -188,6 +188,7 @@ eventCommand
       await executeAction('dotmock_delete_webhook_event', {
         apiId: opts.api,
         eventKey: opts.event,
+        approved: true,
       });
       if (isJsonMode()) {
         json({ deleted: true, api: opts.api, event: opts.event });
