@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { generatedOpenApiSpec } from "../src/commands/create.js";
 import { buildLlmRequest, buildTarget } from "../src/commands/test.js";
@@ -89,6 +90,8 @@ describe("CLI lifecycle contract", () => {
       { encoding: "utf8" },
     ).trim();
 
-    assert.equal(version, "0.3.0");
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    assert.match(version, /^\d+\.\d+\.\d+/);
+    assert.equal(version, pkg.version);
   });
 });

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createRequire } from "node:module";
 import { Command } from "commander";
 import { loginCommand, logoutCommand } from "./commands/login.js";
 import { statusCommand } from "./commands/status.js";
@@ -25,6 +26,9 @@ import { realtimeCommand } from "./commands/realtime.js";
 import { mockCommand } from "./commands/mock.js";
 import { capturesCommand } from "./commands/captures.js";
 import { llmCommand } from "./commands/llm.js";
+
+// Single source of truth for the release version (dist/ sits next to package.json).
+const cliVersion: string = createRequire(import.meta.url)("../package.json").version;
 import { initCommand } from "./commands/init.js";
 
 const program = new Command();
@@ -32,7 +36,7 @@ const program = new Command();
 program
   .name("dotmock")
   .description("CLI for DotMock — create, manage, and use mock APIs")
-  .version("0.3.0")
+  .version(cliVersion)
   .option("--json", "Emit machine-readable JSON for coding agents and CI");
 
 program.addCommand(loginCommand);
